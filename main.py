@@ -71,6 +71,8 @@ class TradingBot:
 
     async def _run_polling_loop(self) -> None:
         while not self._max_iterations_reached():
+            print("Running iteration...")
+
             await self._refresh_sentiment_if_due()
             snapshots = await self.market_data.snapshots(self.settings.trading.symbols, self.sentiment_by_symbol)
             for snapshot in snapshots:
@@ -81,9 +83,12 @@ class TradingBot:
     async def _run_websocket_loop(self) -> None:
         feed = BinanceWebSocketFeed(self.settings)
         async for snapshot in feed.stream(self.sentiment_by_symbol):
+            print("Running iteration (websocket)...")
+
             await self._refresh_sentiment_if_due()
             await self._process_snapshot(snapshot)
             self.iterations += 1
+
             if self._max_iterations_reached():
                 break
 
@@ -242,6 +247,8 @@ def apply_cli_overrides(settings: Settings, args: argparse.Namespace) -> Setting
 
 
 async def async_main() -> None:
+    print("=== BOT STARTING ===")
+
     args = build_arg_parser().parse_args()
     settings = apply_cli_overrides(load_settings(), args)
     logging.basicConfig(
@@ -254,4 +261,7 @@ async def async_main() -> None:
 
 def cli() -> None:
     asyncio.run(async_main())
+
+if __name__ == "__main__":
+    cli()
 
