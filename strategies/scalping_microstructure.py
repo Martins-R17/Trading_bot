@@ -14,10 +14,22 @@ class ScalpingMicrostructureStrategy(BaseStrategy):
     name = "scalping_microstructure"
     min_bars = 30
 
-    def __init__(self, imbalance_threshold: float = 0.22, max_spread_bps: float = 8.0) -> None:
+    def __init__(
+        self,
+        imbalance_threshold: float = 0.35,
+        max_spread_bps: float = 8.0,
+        min_macd_hist_bps: float = 0.05,
+        neutral_rsi_band: float = 5.0,
+        strong_liquidity_imbalance: float = 0.60,
+        strong_liquidity_depth_quote: float = 500_000.0,
+    ) -> None:
         super().__init__()
         self.imbalance_threshold = imbalance_threshold
         self.max_spread_bps = max_spread_bps
+        self.min_macd_hist_bps = min_macd_hist_bps
+        self.neutral_rsi_band = neutral_rsi_band
+        self.strong_liquidity_imbalance = strong_liquidity_imbalance
+        self.strong_liquidity_depth_quote = strong_liquidity_depth_quote
 
     def generate_signal(self, snapshot: MarketSnapshot) -> StrategySignal:
         if not self.has_enough_data(snapshot):
@@ -40,19 +52,30 @@ class ScalpingMicrostructureStrategy(BaseStrategy):
 
         df = snapshot.ohlcv
         rsi = float(df["rsi"].iloc[-1])
+        macd_hist = float(df["macd_hist"].iloc[-1])
+        macd_hist_bps = macd_hist / max(entry, 1e-9) * 10_000
+        depth_quote = book.total_depth_quote(levels=5)
         if not self.ema_trend_confirms(df, side, tolerance_bps=3.0):
             return self.hold_signal(snapshot, "ema_trend_filter")
         if not self.macd_confirms(df, side, tolerance_bps=0.5):
             return self.hold_signal(snapshot, "macd_not_confirmed")
+        if side.direction * macd_hist_bps < self.min_macd_hist_bps:
+            return self.hold_signal(snapshot, "macd_hist_not_aligned")
         if side == Side.BUY and rsi > 80:
             return self.hold_signal(snapshot, "rsi_overextended")
         if side == Side.SELL and rsi < 20:
             return self.hold_signal(snapshot, "rsi_overextended")
+        liquidity_very_strong = (
+            abs(imbalance) >= self.strong_liquidity_imbalance
+            and depth_quote >= self.strong_liquidity_depth_quote
+        )
+        if abs(rsi - 50.0) <= self.neutral_rsi_band and not liquidity_very_strong:
+            return self.hold_signal(snapshot, "neutral_rsi_requires_stronger_liquidity")
 
         spread = max(book.spread or entry * 0.0001, entry * 0.00003)
         strength = self.clamp_strength((abs(imbalance) - self.imbalance_threshold) / (1 - self.imbalance_threshold))
-        stop_distance = max(spread * 2.5, entry * 0.0010)
-        take_distance = max(spread * 4.0, entry * 0.0016)
+        stop_distance = max(spread * 3.0, entry * 0.0012)
+        take_distance = max(spread * 6.0, entry * 0.0030)
         stop_loss = entry - side.direction * stop_distance
         take_profit = entry + side.direction * take_distance
 
@@ -69,7 +92,8 @@ class ScalpingMicrostructureStrategy(BaseStrategy):
                 **self.indicator_metadata(df),
                 "imbalance": imbalance,
                 "spread_bps": book.spread_bps,
-                "depth_quote": book.total_depth_quote(levels=5),
+                "depth_quote": depth_quote,
+                "macd_hist_bps": macd_hist_bps,
             },
         )
 

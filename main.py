@@ -210,9 +210,12 @@ class TradingBot:
         closed_count = len(self.order_manager.closed_trades)
         wins = sum(1 for trade in self.order_manager.closed_trades if trade.realized_pnl > 0)
         win_rate = wins / closed_count * 100 if closed_count else 0.0
+        gross_total = sum(trade.gross_pnl for trade in self.order_manager.closed_trades)
+        costs_total = sum(trade.total_costs for trade in self.order_manager.closed_trades)
         print("Trades")
         print(
-            f"closed={closed_count} | realized={self._signed_money(self.risk_manager.state.realized_pnl)} | "
+            f"closed={closed_count} | gross={self._signed_money(gross_total)} | "
+            f"costs={self._money(costs_total)} | net={self._signed_money(self.risk_manager.state.realized_pnl)} | "
             f"win_rate={win_rate:.1f}% | "
             f"history={self.order_manager.trade_history_path}"
         )
@@ -220,7 +223,9 @@ class TradingBot:
         for trade in recent_trades:
             print(
                 f"closed {trade.symbol} {trade.side.value} "
-                f"pnl={self._signed_money(trade.realized_pnl)} "
+                f"gross={self._signed_money(trade.gross_pnl)} "
+                f"costs={self._money(trade.total_costs)} "
+                f"net={self._signed_money(trade.realized_pnl)} "
                 f"reason={trade.reason} strategy={trade.strategy_name}"
             )
 
@@ -386,9 +391,11 @@ class TradingBot:
                 )
 
             logger.info(
-                "Closed %s %s pnl=%.4f reason=%s equity=%.2f",
+                "Closed %s %s gross=%.4f costs=%.4f net=%.4f reason=%s equity=%.2f",
                 trade.side.value,
                 trade.symbol,
+                trade.gross_pnl,
+                trade.total_costs,
                 trade.realized_pnl,
                 trade.reason,
                 self.risk_manager.state.equity,
@@ -443,17 +450,33 @@ class TradingBot:
         if held_iterations < max_holding_iterations:
             return None
 
+        pnl = self.order_manager.estimate_exit_pnl(position, snapshot.close)
+        breakeven_threshold = max(
+            self.settings.risk.min_expected_net_profit,
+            position.entry_price * position.amount * 0.00005,
+        )
+        if pnl["net_pnl"] < 0:
+            reason = "max_hold_exit_negative_net_costs_not_overcome"
+        elif pnl["net_pnl"] <= breakeven_threshold:
+            reason = "max_hold_exit_near_breakeven_costs_not_overcome"
+        else:
+            reason = "max_hold_exit_positive_net"
+
         logger.info(
-            "Paper max-hold exit %s held=%s max=%s mark=%.4f",
+            "Paper max-hold exit %s held=%s max=%s mark=%.4f gross=%.4f costs=%.4f net=%.4f reason=%s",
             snapshot.symbol,
             held_iterations,
             max_holding_iterations,
             snapshot.close,
+            pnl["gross_pnl"],
+            pnl["total_costs"],
+            pnl["net_pnl"],
+            reason,
         )
         return self.order_manager.close_position(
             snapshot.symbol,
             snapshot.close,
-            "max_hold_exit",
+            reason,
         )
 
     def state(self) -> dict[str, Any]:
@@ -490,8 +513,11 @@ class TradingBot:
                     "amount": trade.amount,
                     "entry_price": trade.entry_price,
                     "exit_price": trade.exit_price,
-                    "realized_pnl": trade.realized_pnl,
+                    "gross_pnl": trade.gross_pnl,
                     "fees": trade.fees,
+                    "slippage_costs": trade.slippage_costs,
+                    "total_costs": trade.total_costs,
+                    "realized_pnl": trade.realized_pnl,
                     "reason": trade.reason,
                     "strategy": trade.strategy_name,
                     "confidence": trade.confidence,

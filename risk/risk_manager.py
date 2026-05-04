@@ -93,9 +93,13 @@ class RiskManager:
             return self._reject(signal, liquidity_reason)
 
         round_trip_cost = notional * (self.settings.fee_bps * 2 + self.settings.slippage_bps * 2) / 10_000
-        expected_reward = reward_per_unit * amount
-        if expected_reward <= round_trip_cost:
+        expected_gross_reward = reward_per_unit * amount
+        required_reward = round_trip_cost * self.settings.min_reward_cost_multiple
+        expected_net_profit = expected_gross_reward - round_trip_cost
+        if expected_gross_reward < required_reward:
             return self._reject(signal, "expected_reward_below_costs")
+        if expected_net_profit < self.settings.min_expected_net_profit:
+            return self._reject(signal, "expected_net_profit_too_low")
 
         return RiskDecision(
             approved=True,
@@ -115,6 +119,9 @@ class RiskManager:
                 **signal.metadata,
                 "risk_capital": risk_capital,
                 "reward_risk_ratio": reward_risk_ratio,
+                "expected_gross_reward": expected_gross_reward,
+                "expected_net_profit": expected_net_profit,
+                "required_reward": required_reward,
                 "estimated_round_trip_cost": round_trip_cost,
                 "sentiment_multiplier": sentiment_multiplier,
             },

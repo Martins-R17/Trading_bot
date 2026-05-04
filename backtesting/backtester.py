@@ -119,9 +119,11 @@ class Backtester:
             adjusted_exit = exit_price * (1 - self.risk_settings.slippage_bps / 10_000)
         else:
             adjusted_exit = exit_price * (1 + self.risk_settings.slippage_bps / 10_000)
-        gross_pnl = (adjusted_exit - position.entry_price) * position.amount * position.side.direction
+        gross_pnl = (exit_price - position.entry_price) * position.amount * position.side.direction
+        exit_slippage_cost = abs(adjusted_exit - exit_price) * position.amount
         exit_fee = abs(adjusted_exit * position.amount) * self.risk_settings.fee_bps / 10_000
         total_fees = position.fees_paid + exit_fee
+        total_costs = total_fees + exit_slippage_cost
         return TradeRecord(
             symbol=position.symbol,
             side=position.side,
@@ -130,8 +132,11 @@ class Backtester:
             exit_price=adjusted_exit,
             opened_at=position.opened_at,
             closed_at=closed_at or time.time(),
-            realized_pnl=float(gross_pnl - total_fees),
+            realized_pnl=float(gross_pnl - total_costs),
+            gross_pnl=float(gross_pnl),
             fees=float(total_fees),
+            slippage_costs=float(exit_slippage_cost),
+            total_costs=float(total_costs),
             reason=reason,
             strategy_name=position.strategy_name,
             confidence=position.confidence,

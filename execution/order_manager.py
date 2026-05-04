@@ -38,7 +38,12 @@ class OrderManager:
     ) -> Position | None:
         if not result.success or result.filled_amount <= 0:
             return None
-        metadata = {"order_id": result.exchange_order_id, **decision.metadata}
+        metadata = {
+            "order_id": result.exchange_order_id,
+            "reference_entry_price": decision.entry_price,
+            "entry_slippage_cost": abs(result.slippage * result.filled_amount),
+            **decision.metadata,
+        }
         if opened_iteration is not None:
             metadata["opened_iteration"] = opened_iteration
         position = Position(
@@ -69,21 +74,20 @@ class OrderManager:
 
     def close_position(self, symbol: str, exit_price: float, reason: str) -> TradeRecord:
         position = self.positions.pop(symbol)
-        adjusted_exit = self._apply_exit_slippage(position.side, exit_price)
-        gross_pnl = (adjusted_exit - position.entry_price) * position.amount * position.side.direction
-        exit_fee = abs(adjusted_exit * position.amount) * self.risk_settings.fee_bps / 10_000
-        total_fees = position.fees_paid + exit_fee
-        realized_pnl = gross_pnl - total_fees
+        pnl = self.estimate_exit_pnl(position, exit_price)
         trade = TradeRecord(
             symbol=symbol,
             side=position.side,
             amount=position.amount,
             entry_price=position.entry_price,
-            exit_price=adjusted_exit,
+            exit_price=pnl["adjusted_exit"],
             opened_at=position.opened_at,
             closed_at=time.time(),
-            realized_pnl=float(realized_pnl),
-            fees=float(total_fees),
+            realized_pnl=float(pnl["net_pnl"]),
+            gross_pnl=float(pnl["gross_pnl"]),
+            fees=float(pnl["fees"]),
+            slippage_costs=float(pnl["slippage_costs"]),
+            total_costs=float(pnl["total_costs"]),
             reason=reason,
             strategy_name=position.strategy_name,
             confidence=position.confidence,
@@ -101,7 +105,7 @@ class OrderManager:
         for symbol, position in self.positions.items():
             price = mark_prices.get(symbol)
             if price is not None:
-                pnl_by_symbol[symbol] = self._net_unrealized_pnl(position, price)
+                pnl_by_symbol[symbol] = self.estimate_exit_pnl(position, price)["net_pnl"]
         return pnl_by_symbol
 
     @property
@@ -114,11 +118,24 @@ class OrderManager:
             return exit_price - slippage
         return exit_price + slippage
 
-    def _net_unrealized_pnl(self, position: Position, mark_price: float) -> float:
+    def estimate_exit_pnl(self, position: Position, mark_price: float) -> dict[str, float]:
+        reference_entry = float(position.metadata.get("reference_entry_price", position.entry_price))
+        entry_slippage_cost = abs(float(position.metadata.get("entry_slippage_cost", 0.0)))
         adjusted_exit = self._apply_exit_slippage(position.side, mark_price)
-        gross_pnl = (adjusted_exit - position.entry_price) * position.amount * position.side.direction
+        gross_pnl = (mark_price - reference_entry) * position.amount * position.side.direction
+        exit_slippage_cost = abs(adjusted_exit - mark_price) * position.amount
         exit_fee = abs(adjusted_exit * position.amount) * self.risk_settings.fee_bps / 10_000
-        return float(gross_pnl - position.fees_paid - exit_fee)
+        fees = position.fees_paid + exit_fee
+        slippage_costs = entry_slippage_cost + exit_slippage_cost
+        total_costs = fees + slippage_costs
+        return {
+            "adjusted_exit": float(adjusted_exit),
+            "gross_pnl": float(gross_pnl),
+            "fees": float(fees),
+            "slippage_costs": float(slippage_costs),
+            "total_costs": float(total_costs),
+            "net_pnl": float(gross_pnl - total_costs),
+        }
 
     def _append_trade_history(self, trade: TradeRecord) -> None:
         fieldnames = [
@@ -128,8 +145,11 @@ class OrderManager:
             "amount",
             "entry_price",
             "exit_price",
-            "realized_pnl",
+            "gross_pnl",
             "fees",
+            "slippage_costs",
+            "total_costs",
+            "realized_pnl",
             "reason",
             "strategy_name",
             "confidence",
@@ -142,8 +162,11 @@ class OrderManager:
             "amount": f"{trade.amount:.12f}",
             "entry_price": f"{trade.entry_price:.8f}",
             "exit_price": f"{trade.exit_price:.8f}",
-            "realized_pnl": f"{trade.realized_pnl:.8f}",
+            "gross_pnl": f"{trade.gross_pnl:.8f}",
             "fees": f"{trade.fees:.8f}",
+            "slippage_costs": f"{trade.slippage_costs:.8f}",
+            "total_costs": f"{trade.total_costs:.8f}",
+            "realized_pnl": f"{trade.realized_pnl:.8f}",
             "reason": trade.reason,
             "strategy_name": trade.strategy_name,
             "confidence": f"{trade.confidence:.6f}",
@@ -152,11 +175,20 @@ class OrderManager:
         try:
             self.trade_history_path.parent.mkdir(parents=True, exist_ok=True)
             file_exists = self.trade_history_path.exists()
+            header_matches = file_exists and self._history_header_matches(fieldnames)
             with self.trade_history_path.open("a", newline="", encoding="utf-8") as handle:
                 writer = csv.DictWriter(handle, fieldnames=fieldnames)
-                if not file_exists:
+                if not header_matches:
                     writer.writeheader()
                 writer.writerow(row)
         except OSError as exc:
             logger.warning("Could not write trade history to %s: %s", self.trade_history_path, exc)
+
+    def _history_header_matches(self, fieldnames: list[str]) -> bool:
+        try:
+            with self.trade_history_path.open("r", newline="", encoding="utf-8") as handle:
+                header = handle.readline().strip().split(",")
+        except OSError:
+            return False
+        return header == fieldnames
 

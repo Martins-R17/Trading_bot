@@ -243,7 +243,10 @@ class TradeRecord:
     opened_at: float
     closed_at: float
     realized_pnl: float
+    gross_pnl: float
     fees: float
+    slippage_costs: float
+    total_costs: float
     reason: str
     strategy_name: str
     confidence: float

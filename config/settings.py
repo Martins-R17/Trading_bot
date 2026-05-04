@@ -98,6 +98,8 @@ class RiskSettings:
     max_position_notional_fraction: float = 0.25
     min_position_notional: float = 10.0
     min_reward_risk_ratio: float = 1.05
+    min_reward_cost_multiple: float = 2.0
+    min_expected_net_profit: float = 1.0
     max_order_size_fraction_of_depth: float = 0.2
     min_leverage: float = 1.0
     max_leverage: float = 5.0
@@ -178,6 +180,8 @@ def load_settings() -> Settings:
             max_position_notional_fraction=_env_float("MAX_POSITION_NOTIONAL_FRACTION", 0.25),
             min_position_notional=_env_float("MIN_POSITION_NOTIONAL", 10.0),
             min_reward_risk_ratio=_env_float("MIN_REWARD_RISK_RATIO", 1.05),
+            min_reward_cost_multiple=_env_float("MIN_REWARD_COST_MULTIPLE", 2.0),
+            min_expected_net_profit=_env_float("MIN_EXPECTED_NET_PROFIT", 1.0),
             max_order_size_fraction_of_depth=_env_float("MAX_ORDER_SIZE_FRACTION_OF_DEPTH", 0.2),
             min_leverage=_env_float("MIN_LEVERAGE", 1.0),
             max_leverage=_env_float("MAX_LEVERAGE", 5.0),
