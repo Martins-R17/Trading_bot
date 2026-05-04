@@ -68,6 +68,12 @@ class RiskManager:
 
         risk_per_unit = abs(entry - stop_loss)
         reward_per_unit = abs(take_profit - entry)
+        target_move_bps = reward_per_unit / entry * 10_000
+        stop_move_bps = risk_per_unit / entry * 10_000
+        required_target_move_bps = max(
+            self.settings.min_target_move_bps,
+            self.settings.round_trip_taker_cost_bps * self.settings.min_reward_to_cost_ratio,
+        )
         if risk_per_unit <= 0:
             return self._reject(signal, "invalid_stop_distance")
         reward_risk_ratio = reward_per_unit / risk_per_unit
@@ -94,20 +100,33 @@ class RiskManager:
 
         round_trip_cost = notional * self.settings.round_trip_taker_cost_rate
         expected_gross_reward = reward_per_unit * amount
-        required_reward = round_trip_cost * self.settings.min_reward_cost_multiple
+        required_reward = round_trip_cost * self.settings.min_reward_to_cost_ratio
         expected_net_profit = expected_gross_reward - round_trip_cost
+        reward_cost_ratio = expected_gross_reward / max(round_trip_cost, 1e-9)
         risk_metadata = {
             "risk_capital": risk_capital,
             "reward_risk_ratio": reward_risk_ratio,
+            "reward_cost_ratio": reward_cost_ratio,
             "expected_gross_reward": expected_gross_reward,
             "expected_net_profit": expected_net_profit,
             "required_reward": required_reward,
             "estimated_round_trip_cost": round_trip_cost,
             "estimated_round_trip_cost_rate": self.settings.round_trip_taker_cost_rate,
+            "target_move_bps": target_move_bps,
+            "stop_move_bps": stop_move_bps,
+            "required_target_move_bps": required_target_move_bps,
+            "min_reward_to_cost_ratio": self.settings.min_reward_to_cost_ratio,
             "sentiment_multiplier": sentiment_multiplier,
             "notional": notional,
             "amount": amount,
         }
+        if target_move_bps < required_target_move_bps:
+            return self._reject(
+                signal,
+                "target_move_too_small_after_costs",
+                metadata=risk_metadata,
+                confidence=confidence,
+            )
         if expected_gross_reward < required_reward:
             return self._reject(
                 signal,
@@ -115,7 +134,7 @@ class RiskManager:
                 metadata=risk_metadata,
                 confidence=confidence,
             )
-        if expected_net_profit < self.settings.min_expected_net_profit:
+        if expected_net_profit < self.settings.min_expected_net_profit_usd:
             return self._reject(
                 signal,
                 "expected_net_profit_too_low",

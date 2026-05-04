@@ -18,9 +18,21 @@ class BaseStrategy(ABC):
     name = "base"
     min_bars = 50
 
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        min_target_move_bps: float = 75.0,
+        atr_take_profit_multiplier: float = 3.0,
+        atr_stop_loss_multiplier: float = 1.0,
+        min_reward_to_cost_ratio: float = 3.0,
+        round_trip_cost_bps: float = 24.0,
+    ) -> None:
         self.recent_pnl: deque[float] = deque(maxlen=100)
         self.recent_wins: deque[int] = deque(maxlen=100)
+        self.min_target_move_bps = float(min_target_move_bps)
+        self.atr_take_profit_multiplier = float(atr_take_profit_multiplier)
+        self.atr_stop_loss_multiplier = float(atr_stop_loss_multiplier)
+        self.min_reward_to_cost_ratio = float(min_reward_to_cost_ratio)
+        self.round_trip_cost_bps = float(round_trip_cost_bps)
 
     @abstractmethod
     def generate_signal(self, snapshot: MarketSnapshot) -> StrategySignal:
@@ -46,7 +58,12 @@ class BaseStrategy(ABC):
         win_rate = float(np.mean(self.recent_wins)) if self.recent_wins else 0.5
         return float(np.clip(0.5 + 0.18 * np.tanh(sharpe_like) + 0.25 * (win_rate - 0.5), 0.0, 1.0))
 
-    def hold_signal(self, snapshot: MarketSnapshot, reason: str) -> StrategySignal:
+    def hold_signal(
+        self,
+        snapshot: MarketSnapshot,
+        reason: str,
+        metadata: dict[str, float | str] | None = None,
+    ) -> StrategySignal:
         return StrategySignal(
             strategy_name=self.name,
             symbol=snapshot.symbol,
@@ -56,7 +73,7 @@ class BaseStrategy(ABC):
             stop_loss=None,
             take_profit=None,
             confidence_hint=0.0,
-            metadata={"reason": reason},
+            metadata={"reason": reason, **(metadata or {})},
         )
 
     def has_enough_data(self, snapshot: MarketSnapshot) -> bool:
@@ -122,6 +139,51 @@ class BaseStrategy(ABC):
             "macd_signal": self.latest_float(df, "macd_signal", 0.0),
             "macd_hist": self.latest_float(df, "macd_hist", 0.0),
         }
+
+    def required_target_move_bps(self) -> float:
+        return max(
+            self.min_target_move_bps,
+            self.round_trip_cost_bps * self.min_reward_to_cost_ratio,
+        )
+
+    def target_move_bps(self, entry: float, take_profit: float) -> float:
+        return abs(float(take_profit) - float(entry)) / max(float(entry), 1e-9) * 10_000
+
+    def stop_move_bps(self, entry: float, stop_loss: float) -> float:
+        return abs(float(entry) - float(stop_loss)) / max(float(entry), 1e-9) * 10_000
+
+    def edge_metadata(
+        self,
+        entry: float,
+        stop_loss: float,
+        take_profit: float,
+        atr: float,
+        extra: dict[str, float] | None = None,
+    ) -> dict[str, float]:
+        target_move_bps = self.target_move_bps(entry, take_profit)
+        stop_move_bps = self.stop_move_bps(entry, stop_loss)
+        round_trip_cost_bps = max(self.round_trip_cost_bps, 1e-9)
+        return {
+            "atr": float(atr),
+            "atr_bps": float(atr / max(entry, 1e-9) * 10_000),
+            "target_move_bps": float(target_move_bps),
+            "stop_move_bps": float(stop_move_bps),
+            "required_target_move_bps": float(self.required_target_move_bps()),
+            "reward_cost_ratio": float(target_move_bps / round_trip_cost_bps),
+            "round_trip_cost_bps": float(self.round_trip_cost_bps),
+            "min_reward_to_cost_ratio": float(self.min_reward_to_cost_ratio),
+            **(extra or {}),
+        }
+
+    def target_too_small_reason(self, edge: dict[str, float]) -> str:
+        if edge["target_move_bps"] >= edge["required_target_move_bps"]:
+            return ""
+        return (
+            "target_move_too_small_after_costs:"
+            f"target={edge['target_move_bps']:.2f}bps "
+            f"required={edge['required_target_move_bps']:.2f}bps "
+            f"reward_cost={edge['reward_cost_ratio']:.2f}x"
+        )
 
     def clamp_strength(self, value: float) -> float:
         return float(np.clip(value, 0.0, 1.0))

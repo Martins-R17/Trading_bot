@@ -48,6 +48,7 @@ class StrategySelector:
 
             if not signal.is_actionable:
                 strategy_scores[strategy.name] = 0.0
+                metadata = dict(signal.metadata)
                 candidate_diagnostics.append(
                     CandidateDiagnostics(
                         symbol=snapshot.symbol,
@@ -55,8 +56,11 @@ class StrategySelector:
                         side=signal.side,
                         market_score=float(market_score),
                         performance_score=float(performance_score),
-                        rejection_reason=str(signal.metadata.get("reason", "not_actionable")),
-                        metadata=dict(signal.metadata),
+                        rejection_reason=str(metadata.get("reason", "not_actionable")),
+                        target_move_bps=self._metadata_float(metadata, "target_move_bps"),
+                        reward_cost_ratio=self._metadata_float(metadata, "reward_cost_ratio"),
+                        required_target_move_bps=self._metadata_float(metadata, "required_target_move_bps"),
+                        metadata=metadata,
                     )
                 )
                 continue
@@ -66,6 +70,7 @@ class StrategySelector:
                 strategy_scores[strategy.name] = 0.0
                 signal.metadata["rejection_reason"] = counter_trend_reason
                 rejections[strategy.name] = counter_trend_reason
+                metadata = dict(signal.metadata)
                 candidate_diagnostics.append(
                     CandidateDiagnostics(
                         symbol=snapshot.symbol,
@@ -75,7 +80,10 @@ class StrategySelector:
                         performance_score=float(performance_score),
                         actionable=True,
                         rejection_reason=counter_trend_reason,
-                        metadata=dict(signal.metadata),
+                        target_move_bps=self._metadata_float(metadata, "target_move_bps"),
+                        reward_cost_ratio=self._metadata_float(metadata, "reward_cost_ratio"),
+                        required_target_move_bps=self._metadata_float(metadata, "required_target_move_bps"),
+                        metadata=metadata,
                     )
                 )
                 continue
@@ -100,6 +108,7 @@ class StrategySelector:
             signal.metadata["raw_model_confidence"] = confidence
             signal.metadata["market_score"] = market_score
             signal.metadata["performance_score"] = performance_score
+            metadata = dict(signal.metadata)
             candidate_diagnostics.append(
                 CandidateDiagnostics(
                     symbol=snapshot.symbol,
@@ -110,7 +119,10 @@ class StrategySelector:
                     performance_score=float(performance_score),
                     final_score=final_score,
                     actionable=True,
-                    metadata=dict(signal.metadata),
+                    target_move_bps=self._metadata_float(metadata, "target_move_bps"),
+                    reward_cost_ratio=self._metadata_float(metadata, "reward_cost_ratio"),
+                    required_target_move_bps=self._metadata_float(metadata, "required_target_move_bps"),
+                    metadata=metadata,
                 )
             )
 
@@ -156,6 +168,12 @@ class StrategySelector:
             rejections,
             candidate_diagnostics,
         )
+
+    def _metadata_float(self, metadata: dict[str, object], key: str) -> float:
+        try:
+            return float(metadata.get(key, 0.0))
+        except (TypeError, ValueError):
+            return 0.0
 
     def _liquidity_score(self, snapshot: MarketSnapshot) -> float:
         book = snapshot.order_book

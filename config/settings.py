@@ -109,8 +109,13 @@ class RiskSettings:
     max_position_notional_fraction: float = 0.25
     min_position_notional: float = 10.0
     min_reward_risk_ratio: float = 1.05
-    min_reward_cost_multiple: float = 2.0
+    min_reward_to_cost_ratio: float = 3.0
+    min_reward_cost_multiple: float = 3.0
+    min_expected_net_profit_usd: float = 1.0
     min_expected_net_profit: float = 1.0
+    min_target_move_bps: float = 75.0
+    atr_take_profit_multiplier: float = 3.0
+    atr_stop_loss_multiplier: float = 1.0
     scalping_min_net_cost_multiple: float = 3.0
     scalping_min_expected_net_profit: float = 5.0
     scalping_target_cost_buffer: float = 1.5
@@ -176,6 +181,14 @@ def load_settings() -> Settings:
     _load_env_file()
     maker_fee_rate = _env_fee_rate("MAKER_FEE_RATE", "FEE_BPS", 0.001)
     taker_fee_rate = _env_fee_rate("TAKER_FEE_RATE", "FEE_BPS", 0.001)
+    min_reward_to_cost_ratio = _env_float(
+        "MIN_REWARD_TO_COST_RATIO",
+        _env_float("MIN_REWARD_COST_MULTIPLE", 3.0),
+    )
+    min_expected_net_profit_usd = _env_float(
+        "MIN_EXPECTED_NET_PROFIT_USD",
+        _env_float("MIN_EXPECTED_NET_PROFIT", 1.0),
+    )
     return Settings(
         app=AppSettings(
             log_level=os.getenv("LOG_LEVEL", "INFO"),
@@ -223,8 +236,13 @@ def load_settings() -> Settings:
             max_position_notional_fraction=_env_float("MAX_POSITION_NOTIONAL_FRACTION", 0.25),
             min_position_notional=_env_float("MIN_POSITION_NOTIONAL", 10.0),
             min_reward_risk_ratio=_env_float("MIN_REWARD_RISK_RATIO", 1.05),
-            min_reward_cost_multiple=_env_float("MIN_REWARD_COST_MULTIPLE", 2.0),
-            min_expected_net_profit=_env_float("MIN_EXPECTED_NET_PROFIT", 1.0),
+            min_reward_to_cost_ratio=min_reward_to_cost_ratio,
+            min_reward_cost_multiple=min_reward_to_cost_ratio,
+            min_expected_net_profit_usd=min_expected_net_profit_usd,
+            min_expected_net_profit=min_expected_net_profit_usd,
+            min_target_move_bps=_env_float("MIN_TARGET_MOVE_BPS", 75.0),
+            atr_take_profit_multiplier=_env_float("ATR_TAKE_PROFIT_MULTIPLIER", 3.0),
+            atr_stop_loss_multiplier=_env_float("ATR_STOP_LOSS_MULTIPLIER", 1.0),
             scalping_min_net_cost_multiple=_env_float("SCALPING_MIN_NET_COST_MULTIPLE", 3.0),
             scalping_min_expected_net_profit=_env_float("SCALPING_MIN_EXPECTED_NET_PROFIT", 5.0),
             scalping_target_cost_buffer=_env_float("SCALPING_TARGET_COST_BUFFER", 1.5),

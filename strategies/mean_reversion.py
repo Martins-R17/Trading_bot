@@ -14,8 +14,23 @@ class MeanReversionStrategy(BaseStrategy):
     name = "mean_reversion"
     min_bars = 80
 
-    def __init__(self, lookback: int = 40, entry_z: float = 1.65) -> None:
-        super().__init__()
+    def __init__(
+        self,
+        lookback: int = 40,
+        entry_z: float = 1.65,
+        min_target_move_bps: float = 75.0,
+        atr_take_profit_multiplier: float = 3.0,
+        atr_stop_loss_multiplier: float = 1.0,
+        min_reward_to_cost_ratio: float = 3.0,
+        round_trip_cost_bps: float = 24.0,
+    ) -> None:
+        super().__init__(
+            min_target_move_bps=min_target_move_bps,
+            atr_take_profit_multiplier=atr_take_profit_multiplier,
+            atr_stop_loss_multiplier=atr_stop_loss_multiplier,
+            min_reward_to_cost_ratio=min_reward_to_cost_ratio,
+            round_trip_cost_bps=round_trip_cost_bps,
+        )
         self.lookback = lookback
         self.entry_z = entry_z
 
@@ -36,26 +51,59 @@ class MeanReversionStrategy(BaseStrategy):
         ema_fast = float(df["ema_fast"].iloc[-1])
         ema_slow = float(df["ema_slow"].iloc[-1])
         atr = max(self.atr(df), price * 0.0007)
+        mean_distance = abs(price - rolling_mean)
+        mean_distance_bps = mean_distance / max(price, 1e-9) * 10_000
+        base_metadata = {
+            **self.indicator_metadata(df),
+            "zscore": zscore,
+            "rolling_mean": rolling_mean,
+            "mean_distance_bps": mean_distance_bps,
+            "atr": atr,
+            "atr_bps": atr / max(price, 1e-9) * 10_000,
+        }
 
         if zscore <= -self.entry_z and rsi < 38:
             side = Side.BUY
         elif zscore >= self.entry_z and rsi > 62:
             side = Side.SELL
         else:
-            return self.hold_signal(snapshot, "mean_reversion_not_confirmed")
+            return self.hold_signal(snapshot, "mean_reversion_not_confirmed", base_metadata)
 
         ema_gap_bps = abs(ema_fast - ema_slow) / max(price, 1e-9) * 10_000
+        base_metadata["ema_gap_bps"] = ema_gap_bps
         trend_side = Side.BUY if ema_fast >= ema_slow else Side.SELL
         if side != trend_side and ema_gap_bps > 35:
-            return self.hold_signal(snapshot, "ema_trend_too_strong")
+            return self.hold_signal(snapshot, "ema_trend_too_strong", base_metadata)
         if not self.macd_reversal_confirms(df, side):
-            return self.hold_signal(snapshot, "macd_reversal_not_confirmed")
+            return self.hold_signal(snapshot, "macd_reversal_not_confirmed", base_metadata)
+        stop_loss = price - side.direction * atr * self.atr_stop_loss_multiplier
+        target_distance = min(mean_distance, atr * self.atr_take_profit_multiplier)
+        take_profit = price + side.direction * target_distance
+        edge = self.edge_metadata(
+            price,
+            stop_loss,
+            take_profit,
+            atr,
+            {
+                "zscore": zscore,
+                "rolling_mean": rolling_mean,
+                "mean_distance_bps": mean_distance_bps,
+                "ema_gap_bps": ema_gap_bps,
+            },
+        )
+        if mean_distance_bps < self.required_target_move_bps():
+            return self.hold_signal(
+                snapshot,
+                "mean_distance_too_small_after_costs",
+                {**base_metadata, **edge},
+            )
+        target_reason = self.target_too_small_reason(edge)
+        if target_reason:
+            return self.hold_signal(snapshot, target_reason, {**base_metadata, **edge})
 
         stretch_score = min(abs(zscore) / 3.0, 1.0)
         rsi_score = min(abs(rsi - 50) / 35.0, 1.0)
         strength = self.clamp_strength(0.65 * stretch_score + 0.35 * rsi_score)
-        stop_loss = price - side.direction * atr * 0.85
-        take_profit = price + side.direction * min(abs(price - rolling_mean), atr * 1.1)
 
         return StrategySignal(
             strategy_name=self.name,
@@ -67,10 +115,8 @@ class MeanReversionStrategy(BaseStrategy):
             take_profit=take_profit,
             confidence_hint=self.clamp_strength(0.52 + strength * 0.33),
             metadata={
-                **self.indicator_metadata(df),
-                "zscore": zscore,
-                "rolling_mean": rolling_mean,
-                "ema_gap_bps": ema_gap_bps,
+                **base_metadata,
+                **edge,
             },
         )
 

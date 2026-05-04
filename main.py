@@ -42,10 +42,17 @@ class TradingBot:
         self.news_provider = NewsDataProvider(settings.news)
         self.sentiment_analyzer = SentimentAnalyzer()
 
+        strategy_edge_config = {
+            "min_target_move_bps": settings.risk.min_target_move_bps,
+            "atr_take_profit_multiplier": settings.risk.atr_take_profit_multiplier,
+            "atr_stop_loss_multiplier": settings.risk.atr_stop_loss_multiplier,
+            "min_reward_to_cost_ratio": settings.risk.min_reward_to_cost_ratio,
+            "round_trip_cost_bps": settings.risk.round_trip_taker_cost_bps,
+        }
         self.strategies: list[BaseStrategy] = [
-            MomentumStrategy(),
-            MeanReversionStrategy(),
-            BreakoutStrategy(),
+            MomentumStrategy(**strategy_edge_config),
+            MeanReversionStrategy(**strategy_edge_config),
+            BreakoutStrategy(**strategy_edge_config),
         ]
         if settings.trading.enable_scalping_microstructure:
             self.strategies.append(
@@ -178,6 +185,13 @@ class TradingBot:
             f"est_round_trip_taker={risk.round_trip_taker_cost_bps:.2f}bps | "
             f"{scalping_status}"
         )
+        print(
+            f"min_reward_cost={risk.min_reward_to_cost_ratio:.2f}x | "
+            f"min_target={risk.min_target_move_bps:.2f}bps | "
+            f"atr_tp={risk.atr_take_profit_multiplier:.2f}x | "
+            f"atr_stop={risk.atr_stop_loss_multiplier:.2f}x | "
+            f"min_net={self._money(risk.min_expected_net_profit_usd)}"
+        )
 
     def _print_ai_review_dashboard(self) -> None:
         print("AI Review")
@@ -243,7 +257,7 @@ class TradingBot:
 
         print(
             f"{'Symbol':<10} {'Strategy':<18} {'Side':<5} {'Conf':>6} "
-            f"{'Gross':>10} {'Costs':>10} {'Net':>10} Reason"
+            f"{'Tgt bps':>8} {'R/C':>6} {'Gross':>10} {'Costs':>10} {'Net':>10} Reason"
         )
         for symbol in self.settings.trading.symbols:
             candidate = self.last_candidate_diagnostics.get(symbol)
@@ -252,6 +266,8 @@ class TradingBot:
             print(
                 f"{symbol:<10} {candidate['strategy_name']:<18} {candidate['side']:<5} "
                 f"{candidate['confidence']:>6.3f} "
+                f"{candidate['target_move_bps']:>8.2f} "
+                f"{candidate['reward_cost_ratio']:>6.2f} "
                 f"{self._signed_money(candidate['expected_gross_reward']):>10} "
                 f"{self._money(candidate['estimated_costs']):>10} "
                 f"{self._signed_money(candidate['expected_net_profit']):>10} "
@@ -622,6 +638,9 @@ class TradingBot:
                 "expected_gross_reward": 0.0,
                 "estimated_costs": 0.0,
                 "expected_net_profit": 0.0,
+                "target_move_bps": 0.0,
+                "reward_cost_ratio": 0.0,
+                "required_target_move_bps": self.settings.risk.min_target_move_bps,
                 "rejection_reason": selection.reason,
                 "has_economics": False,
             }
@@ -643,6 +662,9 @@ class TradingBot:
             "expected_gross_reward": self._finite_number(best.expected_gross_reward),
             "estimated_costs": self._finite_number(best.estimated_costs),
             "expected_net_profit": self._finite_number(best.expected_net_profit),
+            "target_move_bps": self._finite_number(best.target_move_bps),
+            "reward_cost_ratio": self._finite_number(best.reward_cost_ratio),
+            "required_target_move_bps": self._finite_number(best.required_target_move_bps),
             "rejection_reason": reason,
             "has_economics": False,
         }
@@ -666,6 +688,18 @@ class TradingBot:
                 "estimated_costs": estimated_costs,
                 "expected_net_profit": self._finite_number(
                     metadata.get("expected_net_profit")
+                ),
+                "target_move_bps": self._finite_number(
+                    metadata.get("target_move_bps"),
+                    candidate.get("target_move_bps", 0.0),
+                ),
+                "reward_cost_ratio": self._finite_number(
+                    metadata.get("reward_cost_ratio"),
+                    candidate.get("reward_cost_ratio", 0.0),
+                ),
+                "required_target_move_bps": self._finite_number(
+                    metadata.get("required_target_move_bps"),
+                    candidate.get("required_target_move_bps", 0.0),
                 ),
                 "rejection_reason": "pending_ai_review" if decision.approved else decision.reason,
                 "has_economics": estimated_costs > 0,
@@ -721,11 +755,13 @@ class TradingBot:
             buckets.append("spread_cost_filters")
         return buckets
 
-    def _candidate_rank(self, candidate: dict[str, Any]) -> tuple[int, float, float, float]:
+    def _candidate_rank(self, candidate: dict[str, Any]) -> tuple[int, float, float, float, float, float]:
         has_economics = 1 if candidate.get("has_economics") else 0
         return (
             has_economics,
             self._finite_number(candidate.get("expected_net_profit")),
+            self._finite_number(candidate.get("reward_cost_ratio")),
+            self._finite_number(candidate.get("target_move_bps")),
             self._finite_number(candidate.get("expected_gross_reward")),
             self._finite_number(candidate.get("confidence")),
         )
@@ -745,6 +781,8 @@ class TradingBot:
         return (
             f"{candidate['symbol']} {candidate['strategy_name']} {candidate['side']} "
             f"conf={candidate['confidence']:.3f} "
+            f"target={candidate['target_move_bps']:.2f}bps "
+            f"reward_cost={candidate['reward_cost_ratio']:.2f}x "
             f"gross={self._signed_money(candidate['expected_gross_reward'])} "
             f"costs={self._money(candidate['estimated_costs'])} "
             f"net={self._signed_money(candidate['expected_net_profit'])} "
@@ -785,6 +823,12 @@ class TradingBot:
             "estimated_total_costs": estimated_total_costs,
             "expected_net_profit": self._finite_number(
                 decision.metadata.get("expected_net_profit")
+            ),
+            "target_move_bps": self._finite_number(
+                decision.metadata.get("target_move_bps")
+            ),
+            "reward_cost_ratio": self._finite_number(
+                decision.metadata.get("reward_cost_ratio")
             ),
             "rsi": self._finite_number(self._latest_column(snapshot, "rsi", 50.0)),
             "ema_trend": self._ema_trend_label(snapshot),
@@ -841,7 +885,7 @@ class TradingBot:
 
         pnl = self.order_manager.estimate_exit_pnl(position, snapshot.close)
         breakeven_threshold = max(
-            self.settings.risk.min_expected_net_profit,
+            self.settings.risk.min_expected_net_profit_usd,
             position.entry_price * position.amount * 0.00005,
         )
         if pnl["net_pnl"] < 0:
