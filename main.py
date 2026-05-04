@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import logging
+import math
 import threading
 import time
 from typing import Any
@@ -12,6 +13,7 @@ from typing import Any
 from ai.confidence_model import ConfidenceModel
 from ai.sentiment_analysis import SentimentAnalyzer
 from ai.strategy_selector import StrategySelector
+from ai.trade_reviewer import AITradeReviewResult, OpenAITradeReviewer
 from config.settings import Settings, load_settings
 from core.models import MarketSnapshot, TradeRecord
 from data.market_data import BinanceWebSocketFeed, MarketDataService
@@ -66,6 +68,7 @@ class TradingBot:
             trade_history_path=settings.trading.trade_history_path,
         )
         self.executor = TradeExecutor(settings)
+        self.ai_trade_reviewer = OpenAITradeReviewer(settings.ai_trade_review)
 
         self.sentiment_by_symbol = {
             symbol: 0.0 for symbol in settings.trading.symbols
@@ -74,7 +77,9 @@ class TradingBot:
         self.iterations = 0
         self.last_snapshots: dict[str, MarketSnapshot] = {}
         self.last_rejections: dict[str, str] = {}
+        self.last_ai_reviews: dict[str, str] = {}
         self._logged_rejections: dict[str, str] = {}
+        self._logged_ai_reviews: dict[str, str] = {}
 
     async def run(self) -> None:
         self._validate_live_safety()
@@ -144,6 +149,7 @@ class TradingBot:
 
         self._print_market_dashboard()
         self._print_assumptions_dashboard()
+        self._print_ai_review_dashboard()
         self._print_signal_dashboard()
         self._print_position_dashboard(mark_prices, unrealized_by_symbol)
         self._print_trade_dashboard()
@@ -164,6 +170,16 @@ class TradingBot:
             f"est_round_trip_taker={risk.round_trip_taker_cost_bps:.2f}bps | "
             f"{scalping_status}"
         )
+
+    def _print_ai_review_dashboard(self) -> None:
+        print("AI Review")
+        print(self.ai_trade_reviewer.status_message(self.settings.trading.paper_trade))
+        if not self.last_ai_reviews:
+            return
+        for symbol in self.settings.trading.symbols:
+            review = self.last_ai_reviews.get(symbol)
+            if review:
+                print(f"{symbol}: {review}")
 
     def _print_market_dashboard(self) -> None:
         if not self.last_snapshots:
@@ -382,6 +398,26 @@ class TradingBot:
             )
             return
 
+        ai_review = await self.ai_trade_reviewer.review(
+            self._build_ai_trade_summary(snapshot, selection, decision),
+            paper_trade=self.settings.trading.paper_trade,
+        )
+        decision.metadata["ai_trade_review"] = ai_review.to_metadata()
+        self._record_ai_review(snapshot.symbol, ai_review)
+        if not ai_review.approved:
+            self._record_rejection(
+                snapshot.symbol,
+                f"{selection.signal.strategy_name}:ai_review:{ai_review.reason}",
+            )
+            logger.info(
+                "AI trade review rejected %s %s confidence=%.3f reason=%s",
+                decision.strategy_name,
+                decision.symbol,
+                ai_review.confidence,
+                ai_review.reason,
+            )
+            return
+
         result = await self.executor.execute(decision)
 
         if result.success:
@@ -489,6 +525,78 @@ class TradingBot:
         self._logged_rejections[symbol] = reason
         logger.info("Signal rejected %s: %s", symbol, reason)
 
+    def _build_ai_trade_summary(
+        self,
+        snapshot: MarketSnapshot,
+        selection: Any,
+        decision: Any,
+    ) -> dict[str, Any]:
+        risk = self.settings.risk
+        notional = self._finite_number(decision.notional)
+        estimated_fee_costs = notional * 2 * risk.taker_fee_rate
+        estimated_slippage_costs = notional * 2 * risk.slippage_rate
+        estimated_total_costs = self._finite_number(
+            decision.metadata.get(
+                "estimated_round_trip_cost",
+                estimated_fee_costs + estimated_slippage_costs,
+            )
+        )
+        spread_bps = 0.0
+        if snapshot.order_book is not None:
+            spread_bps = snapshot.order_book.spread_bps
+
+        return {
+            "symbol": decision.symbol,
+            "side": decision.side.value,
+            "entry": self._finite_number(decision.entry_price),
+            "stop_loss": self._finite_number(decision.stop_loss),
+            "take_profit": self._finite_number(decision.take_profit),
+            "expected_gross_reward": self._finite_number(
+                decision.metadata.get("expected_gross_reward")
+            ),
+            "estimated_fee_costs": self._finite_number(estimated_fee_costs),
+            "estimated_slippage_costs": self._finite_number(estimated_slippage_costs),
+            "estimated_total_costs": estimated_total_costs,
+            "expected_net_profit": self._finite_number(
+                decision.metadata.get("expected_net_profit")
+            ),
+            "rsi": self._finite_number(self._latest_column(snapshot, "rsi", 50.0)),
+            "ema_trend": self._ema_trend_label(snapshot),
+            "macd_histogram": self._finite_number(
+                self._latest_column(snapshot, "macd_hist", 0.0)
+            ),
+            "spread_bps": self._finite_number(spread_bps),
+            "volatility": self._finite_number(snapshot.volatility),
+            "strategy_name": decision.strategy_name,
+            "strategy_confidence": self._finite_number(selection.confidence),
+            "current_open_positions_count": self.order_manager.open_position_count,
+            "mode": "paper" if self.settings.trading.paper_trade else "live",
+        }
+
+    def _record_ai_review(self, symbol: str, review: AITradeReviewResult) -> None:
+        if review.skipped:
+            message = review.reason
+        else:
+            message = (
+                f"{review.action_label} confidence={review.confidence:.3f} "
+                f"reason={review.reason}"
+            )
+        self.last_ai_reviews[symbol] = message
+
+        if self._logged_ai_reviews.get(symbol) == message:
+            return
+        self._logged_ai_reviews[symbol] = message
+        logger.info("AI trade review %s: %s", symbol, message)
+
+    def _finite_number(self, value: Any, default: float = 0.0) -> float:
+        try:
+            number = float(value)
+        except (TypeError, ValueError):
+            return default
+        if not math.isfinite(number):
+            return default
+        return number
+
     def _close_paper_position_if_max_held(self, snapshot: MarketSnapshot) -> TradeRecord | None:
         if not self.settings.trading.paper_trade:
             return None
@@ -582,6 +690,10 @@ class TradingBot:
             ],
             "trade_history_path": str(self.order_manager.trade_history_path),
             "last_rejections": dict(self.last_rejections),
+            "ai_trade_review_status": self.ai_trade_reviewer.status_message(
+                self.settings.trading.paper_trade
+            ),
+            "last_ai_reviews": dict(self.last_ai_reviews),
             "sentiment": self.sentiment_by_symbol,
             "iterations": self.iterations,
             "paper_max_holding_iterations": self.settings.trading.paper_max_holding_iterations,

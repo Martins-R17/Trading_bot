@@ -149,6 +149,17 @@ class NewsSettings:
 
 
 @dataclass(frozen=True)
+class AITradeReviewSettings:
+    enabled: bool = False
+    paper_only: bool = True
+    openai_model: str = "gpt-4o-mini"
+    openai_api_key: str = ""
+    timeout_seconds: float = 8.0
+    max_tokens: int = 256
+    min_confidence: float = 0.7
+
+
+@dataclass(frozen=True)
 class Settings:
     app: AppSettings
     exchange: ExchangeSettings
@@ -156,6 +167,7 @@ class Settings:
     market_data: MarketDataSettings
     risk: RiskSettings
     news: NewsSettings
+    ai_trade_review: AITradeReviewSettings
 
 
 def load_settings() -> Settings:
@@ -234,5 +246,14 @@ def load_settings() -> Settings:
             api_key=os.getenv("NEWS_API_KEY", ""),
             refresh_seconds=_env_float("NEWS_REFRESH_SECONDS", 300.0),
             lookback_minutes=_env_int("NEWS_LOOKBACK_MINUTES", 120),
+        ),
+        ai_trade_review=AITradeReviewSettings(
+            enabled=_env_bool("ENABLE_AI_TRADE_REVIEW", False),
+            paper_only=_env_bool("AI_TRADE_REVIEW_PAPER_ONLY", True),
+            openai_model=os.getenv("OPENAI_MODEL", "gpt-4o-mini"),
+            openai_api_key=os.getenv("OPENAI_API_KEY", ""),
+            timeout_seconds=_env_float("AI_TRADE_REVIEW_TIMEOUT_SECONDS", 8.0),
+            max_tokens=_env_int("AI_TRADE_REVIEW_MAX_TOKENS", 256),
+            min_confidence=_env_float("AI_TRADE_REVIEW_MIN_CONFIDENCE", 0.7),
         ),
     )
