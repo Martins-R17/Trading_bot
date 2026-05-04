@@ -141,6 +141,7 @@ class SelectionResult:
     strategy_scores: dict[str, float]
     approved: bool
     reason: str
+    rejections: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass(slots=True)

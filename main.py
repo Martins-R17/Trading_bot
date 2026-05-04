@@ -51,6 +51,10 @@ class TradingBot:
             self.strategies,
             self.confidence_model,
             confidence_threshold=settings.trading.confidence_threshold,
+            ema_trend_deadband_bps=settings.trading.ema_trend_deadband_bps,
+            counter_trend_rsi_overbought=settings.trading.counter_trend_rsi_overbought,
+            counter_trend_rsi_oversold=settings.trading.counter_trend_rsi_oversold,
+            counter_trend_macd_hist_bps=settings.trading.counter_trend_macd_hist_bps,
         )
 
         self.risk_manager = RiskManager(settings.risk)
@@ -66,6 +70,8 @@ class TradingBot:
         self.last_news_refresh = 0.0
         self.iterations = 0
         self.last_snapshots: dict[str, MarketSnapshot] = {}
+        self.last_rejections: dict[str, str] = {}
+        self._logged_rejections: dict[str, str] = {}
 
     async def run(self) -> None:
         self._validate_live_safety()
@@ -133,6 +139,7 @@ class TradingBot:
         print("-" * 96)
 
         self._print_market_dashboard()
+        self._print_signal_dashboard()
         self._print_position_dashboard(mark_prices, unrealized_by_symbol)
         self._print_trade_dashboard()
         print("=" * 96)
@@ -153,14 +160,26 @@ class TradingBot:
                 continue
             spread_bps = snapshot.order_book.spread_bps if snapshot.order_book is not None else 0.0
             rsi = self._latest_column(snapshot, "rsi", 50.0)
-            ema_fast = self._latest_column(snapshot, "ema_fast", snapshot.close)
-            ema_slow = self._latest_column(snapshot, "ema_slow", snapshot.close)
-            ema_trend = "up" if ema_fast > ema_slow else "down" if ema_fast < ema_slow else "flat"
+            ema_trend = self._ema_trend_label(snapshot)
             macd_hist = self._latest_column(snapshot, "macd_hist", 0.0)
             print(
                 f"{symbol:<10} {snapshot.close:>12.4f} {spread_bps:>10.2f} "
                 f"{rsi:>7.2f} {ema_trend:>6} {macd_hist:>12.6f} {snapshot.volatility:>8.4f}"
             )
+
+    def _print_signal_dashboard(self) -> None:
+        print("Signals")
+        if not self.last_rejections:
+            print("no recent rejections")
+            return
+        printed = False
+        for symbol in self.settings.trading.symbols:
+            reason = self.last_rejections.get(symbol)
+            if reason:
+                printed = True
+                print(f"{symbol}: rejected {reason}")
+        if not printed:
+            print("no recent rejections")
 
     def _print_position_dashboard(
         self,
@@ -220,6 +239,17 @@ class TradingBot:
         except (TypeError, ValueError):
             return default
 
+    def _ema_trend_label(self, snapshot: MarketSnapshot) -> str:
+        ema_fast = self._latest_column(snapshot, "ema_fast", snapshot.close)
+        ema_slow = self._latest_column(snapshot, "ema_slow", snapshot.close)
+        price = max(snapshot.close, 1e-9)
+        ema_gap_bps = (ema_fast - ema_slow) / price * 10_000
+        if ema_gap_bps > self.settings.trading.ema_trend_deadband_bps:
+            return "up"
+        if ema_gap_bps < -self.settings.trading.ema_trend_deadband_bps:
+            return "down"
+        return "flat"
+
     def _money(self, value: float) -> str:
         return f"${value:,.2f}"
 
@@ -259,6 +289,7 @@ class TradingBot:
             return
 
         selection = self.selector.select(snapshot)
+        self._record_selection_rejection(snapshot.symbol, selection)
 
         logger.debug(
             "Selection %s scores=%s reason=%s",
@@ -279,6 +310,10 @@ class TradingBot:
         )
 
         if not decision.approved:
+            self._record_rejection(
+                snapshot.symbol,
+                f"{selection.signal.strategy_name}:risk:{decision.reason}",
+            )
             logger.debug(
                 "Risk rejected %s %s: %s",
                 selection.signal.strategy_name,
@@ -359,6 +394,39 @@ class TradingBot:
                 self.risk_manager.state.equity,
             )
 
+    def _record_selection_rejection(self, symbol: str, selection: Any) -> None:
+        if selection.rejections:
+            reason = self._format_selection_rejection(selection)
+            self._record_rejection(symbol, reason)
+            return
+
+        if not selection.approved:
+            self._record_rejection(symbol, selection.reason)
+            return
+
+        self.last_rejections.pop(symbol, None)
+
+    def _format_selection_rejection(self, selection: Any) -> str:
+        if selection.rejections:
+            prioritized = [
+                (strategy, reason)
+                for strategy, reason in selection.rejections.items()
+                if "counter_trend" in reason
+            ]
+            items = prioritized or list(selection.rejections.items())
+            visible = items[:3]
+            return "; ".join(f"{strategy}:{reason}" for strategy, reason in visible)
+        if selection.signal is not None:
+            return f"{selection.signal.strategy_name}:{selection.reason}"
+        return selection.reason
+
+    def _record_rejection(self, symbol: str, reason: str) -> None:
+        self.last_rejections[symbol] = reason
+        if self._logged_rejections.get(symbol) == reason:
+            return
+        self._logged_rejections[symbol] = reason
+        logger.info("Signal rejected %s: %s", symbol, reason)
+
     def _close_paper_position_if_max_held(self, snapshot: MarketSnapshot) -> TradeRecord | None:
         if not self.settings.trading.paper_trade:
             return None
@@ -432,6 +500,7 @@ class TradingBot:
                 for trade in self.order_manager.closed_trades[-20:]
             ],
             "trade_history_path": str(self.order_manager.trade_history_path),
+            "last_rejections": dict(self.last_rejections),
             "sentiment": self.sentiment_by_symbol,
             "iterations": self.iterations,
             "paper_max_holding_iterations": self.settings.trading.paper_max_holding_iterations,

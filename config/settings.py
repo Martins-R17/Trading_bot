@@ -73,6 +73,10 @@ class TradingSettings:
     confidence_threshold: float = 0.8
     max_open_positions: int = 3
     paper_max_holding_iterations: int = 20
+    ema_trend_deadband_bps: float = 1.0
+    counter_trend_rsi_overbought: float = 70.0
+    counter_trend_rsi_oversold: float = 30.0
+    counter_trend_macd_hist_bps: float = 1.0
     trade_history_path: str = "data/trade_history.csv"
 
 
@@ -153,6 +157,10 @@ def load_settings() -> Settings:
             confidence_threshold=_env_float("CONFIDENCE_THRESHOLD", 0.8),
             max_open_positions=_env_int("MAX_OPEN_POSITIONS", 3),
             paper_max_holding_iterations=_env_int("PAPER_MAX_HOLDING_ITERATIONS", 20),
+            ema_trend_deadband_bps=_env_float("EMA_TREND_DEADBAND_BPS", 1.0),
+            counter_trend_rsi_overbought=_env_float("COUNTER_TREND_RSI_OVERBOUGHT", 70.0),
+            counter_trend_rsi_oversold=_env_float("COUNTER_TREND_RSI_OVERSOLD", 30.0),
+            counter_trend_macd_hist_bps=_env_float("COUNTER_TREND_MACD_HIST_BPS", 1.0),
             trade_history_path=os.getenv("TRADE_HISTORY_PATH", "data/trade_history.csv"),
         ),
         market_data=MarketDataSettings(
