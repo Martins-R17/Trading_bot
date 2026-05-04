@@ -50,40 +50,84 @@ class MomentumStrategy(BaseStrategy):
             self.atr_take_profit_multiplier,
             1e-9,
         )
+        target_hint = self.target_hint_metadata(atr_bps * self.atr_take_profit_multiplier)
+        target_hint_pass = target_hint["target_move_bps"] >= target_hint["required_target_move_bps"]
+        trend_side = Side.HOLD
+        if ema_fast > ema_slow and short_return > self.return_threshold:
+            trend_side = Side.BUY
+        elif ema_fast < ema_slow and short_return < -self.return_threshold:
+            trend_side = Side.SELL
+
+        rsi_ok = (
+            (trend_side == Side.BUY and 52 <= rsi <= 74)
+            or (trend_side == Side.SELL and 26 <= rsi <= 48)
+        )
+        side = trend_side if rsi_ok else Side.HOLD
         base_metadata = {
             **self.indicator_metadata(df),
+            **self.diagnostic_metadata(
+                side_considered=trend_side,
+                rsi_check="pass" if rsi_ok else "fail",
+                ema_trend_check="pass" if trend_side != Side.HOLD else "fail",
+                volatility_atr_check="pass" if atr_bps >= required_atr_bps else "fail",
+                target_move_check="pass" if target_hint_pass else "fail",
+                reward_cost_check="pass" if target_hint_pass else "fail",
+                detailed_rejection_reason=(
+                    "trend_not_confirmed" if trend_side == Side.HOLD else "rsi_not_confirmed"
+                ),
+            ),
+            **target_hint,
             "return_5": short_return,
             "atr": atr,
             "atr_bps": atr_bps,
             "required_atr_bps": required_atr_bps,
         }
 
-        side = Side.HOLD
-        if ema_fast > ema_slow and short_return > self.return_threshold and 52 <= rsi <= 74:
-            side = Side.BUY
-        elif ema_fast < ema_slow and short_return < -self.return_threshold and 26 <= rsi <= 48:
-            side = Side.SELL
-
         if side == Side.HOLD:
-            return self.hold_signal(snapshot, "momentum_not_confirmed", base_metadata)
+            return self.hold_signal(snapshot, base_metadata["detailed_rejection_reason"], base_metadata)
         if not self.ema_trend_confirms(df, side):
-            return self.hold_signal(snapshot, "ema_trend_filter", base_metadata)
+            return self.hold_signal(
+                snapshot,
+                "trend_not_confirmed",
+                {**base_metadata, "ema_trend_check": "fail", "detailed_rejection_reason": "trend_not_confirmed"},
+            )
         if not self.macd_confirms(df, side):
-            return self.hold_signal(snapshot, "macd_not_confirmed", base_metadata)
+            return self.hold_signal(
+                snapshot,
+                "macd_not_confirmed",
+                {**base_metadata, "macd_check": "fail", "detailed_rejection_reason": "macd_not_confirmed"},
+            )
         macd_hist_bps = macd_hist / max(price, 1e-9) * 10_000
         min_macd_hist_bps = max(0.5, self.round_trip_cost_bps * 0.02)
         if side == Side.BUY and macd_hist_bps < min_macd_hist_bps:
             return self.hold_signal(
                 snapshot,
-                "macd_hist_not_strong_enough",
-                {**base_metadata, "macd_hist_bps": macd_hist_bps, "min_macd_hist_bps": min_macd_hist_bps},
+                "macd_not_confirmed",
+                {
+                    **base_metadata,
+                    "macd_check": "fail",
+                    "detailed_rejection_reason": "macd_not_confirmed",
+                    "macd_hist_bps": macd_hist_bps,
+                    "min_macd_hist_bps": min_macd_hist_bps,
+                },
             )
         if side == Side.SELL and macd_hist_bps > -min_macd_hist_bps:
             return self.hold_signal(
                 snapshot,
-                "macd_hist_not_strong_enough",
-                {**base_metadata, "macd_hist_bps": macd_hist_bps, "min_macd_hist_bps": min_macd_hist_bps},
+                "macd_not_confirmed",
+                {
+                    **base_metadata,
+                    "macd_check": "fail",
+                    "detailed_rejection_reason": "macd_not_confirmed",
+                    "macd_hist_bps": macd_hist_bps,
+                    "min_macd_hist_bps": min_macd_hist_bps,
+                },
             )
+        base_metadata = {
+            **base_metadata,
+            "macd_check": "pass",
+            "detailed_rejection_reason": "",
+        }
         trend_gap = abs(ema_fast - ema_slow) / price
         return_score = abs(short_return) / max(self.return_threshold * 3, 1e-9)
         rsi_score = 1.0 - abs(rsi - 55) / 55 if side == Side.BUY else 1.0 - abs(rsi - 45) / 55
@@ -100,12 +144,36 @@ class MomentumStrategy(BaseStrategy):
         if atr_bps < required_atr_bps:
             return self.hold_signal(
                 snapshot,
-                "volatility_target_too_small_after_costs",
-                {**base_metadata, **edge},
+                "volatility_too_low",
+                {
+                    **base_metadata,
+                    **edge,
+                    "volatility_atr_check": "fail",
+                    "target_move_check": "fail",
+                    "detailed_rejection_reason": "volatility_too_low",
+                },
             )
         target_reason = self.target_too_small_reason(edge)
         if target_reason:
-            return self.hold_signal(snapshot, target_reason, {**base_metadata, **edge})
+            return self.hold_signal(
+                snapshot,
+                "target_move_too_small",
+                {
+                    **base_metadata,
+                    **edge,
+                    "volatility_atr_check": "pass",
+                    "target_move_check": "fail",
+                    "reward_cost_check": "fail",
+                    "detailed_rejection_reason": "target_move_too_small",
+                },
+            )
+        edge = {
+            **edge,
+            "volatility_atr_check": "pass",
+            "target_move_check": "pass",
+            "reward_cost_check": "pass",
+            "expected_net_profit_check": "pending_risk",
+        }
 
         return StrategySignal(
             strategy_name=self.name,

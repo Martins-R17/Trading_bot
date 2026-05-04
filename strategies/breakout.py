@@ -50,24 +50,42 @@ class BreakoutStrategy(BaseStrategy):
         range_width = max(range_high - range_low, 0.0)
         range_width_bps = range_width / max(price, 1e-9) * 10_000
         atr_bps = atr / max(price, 1e-9) * 10_000
+        raw_side = Side.HOLD
+        if price > range_high:
+            raw_side = Side.BUY
+        elif price < range_low:
+            raw_side = Side.SELL
+        volume_confirmed = latest_volume > avg_volume * self.volume_multiplier
+        target_hint = self.target_hint_metadata(
+            max(atr_bps * self.atr_take_profit_multiplier, range_width_bps * 0.6)
+        )
+        target_hint_pass = target_hint["target_move_bps"] >= target_hint["required_target_move_bps"]
         base_metadata = {
             **self.indicator_metadata(df),
+            **self.diagnostic_metadata(
+                side_considered=raw_side,
+                volatility_atr_check="pass" if raw_side != Side.HOLD and volume_confirmed else "fail",
+                target_move_check="pass" if target_hint_pass else "fail",
+                reward_cost_check="pass" if target_hint_pass else "fail",
+                detailed_rejection_reason="volatility_too_low",
+            ),
+            **target_hint,
             "range_high": range_high,
             "range_low": range_low,
             "range_width_bps": range_width_bps,
             "atr": atr,
             "atr_bps": atr_bps,
+            "volume_ratio": latest_volume / max(avg_volume, 1e-9),
         }
 
-        volume_confirmed = latest_volume > avg_volume * self.volume_multiplier
-        if price > range_high and volume_confirmed:
+        if raw_side == Side.BUY and volume_confirmed:
             side = Side.BUY
             breakout_distance = (price - range_high) / price
-        elif price < range_low and volume_confirmed:
+        elif raw_side == Side.SELL and volume_confirmed:
             side = Side.SELL
             breakout_distance = (range_low - price) / price
         else:
-            return self.hold_signal(snapshot, "breakout_not_confirmed", base_metadata)
+            return self.hold_signal(snapshot, "range_expansion_not_confirmed", base_metadata)
 
         breakout_distance_bps = breakout_distance * 10_000
         base_metadata = {
@@ -77,13 +95,53 @@ class BreakoutStrategy(BaseStrategy):
         }
 
         if not self.ema_trend_confirms(df, side, tolerance_bps=4.0):
-            return self.hold_signal(snapshot, "ema_trend_filter", base_metadata)
+            return self.hold_signal(
+                snapshot,
+                "trend_not_confirmed",
+                {**base_metadata, "ema_trend_check": "fail", "detailed_rejection_reason": "trend_not_confirmed"},
+            )
         if not self.macd_confirms(df, side, tolerance_bps=0.5):
-            return self.hold_signal(snapshot, "macd_not_confirmed", base_metadata)
+            return self.hold_signal(
+                snapshot,
+                "macd_not_confirmed",
+                {
+                    **base_metadata,
+                    "ema_trend_check": "pass",
+                    "macd_check": "fail",
+                    "detailed_rejection_reason": "macd_not_confirmed",
+                },
+            )
         if side == Side.BUY and rsi > 82:
-            return self.hold_signal(snapshot, "rsi_overextended", base_metadata)
+            return self.hold_signal(
+                snapshot,
+                "rsi_not_confirmed",
+                {
+                    **base_metadata,
+                    "ema_trend_check": "pass",
+                    "macd_check": "pass",
+                    "rsi_check": "fail",
+                    "detailed_rejection_reason": "rsi_not_confirmed",
+                },
+            )
         if side == Side.SELL and rsi < 18:
-            return self.hold_signal(snapshot, "rsi_overextended", base_metadata)
+            return self.hold_signal(
+                snapshot,
+                "rsi_not_confirmed",
+                {
+                    **base_metadata,
+                    "ema_trend_check": "pass",
+                    "macd_check": "pass",
+                    "rsi_check": "fail",
+                    "detailed_rejection_reason": "rsi_not_confirmed",
+                },
+            )
+        base_metadata = {
+            **base_metadata,
+            "ema_trend_check": "pass",
+            "macd_check": "pass",
+            "rsi_check": "pass",
+            "detailed_rejection_reason": "",
+        }
         target_distance = max(atr * self.atr_take_profit_multiplier, range_width * 0.6)
         stop_loss = price - side.direction * atr * self.atr_stop_loss_multiplier
         take_profit = price + side.direction * target_distance
@@ -101,12 +159,36 @@ class BreakoutStrategy(BaseStrategy):
         if range_width_bps < self.required_target_move_bps() * 0.6:
             return self.hold_signal(
                 snapshot,
-                "breakout_range_too_small_after_costs",
-                {**base_metadata, **edge},
+                "volatility_too_low",
+                {
+                    **base_metadata,
+                    **edge,
+                    "volatility_atr_check": "fail",
+                    "target_move_check": "fail",
+                    "detailed_rejection_reason": "volatility_too_low",
+                },
             )
         target_reason = self.target_too_small_reason(edge)
         if target_reason:
-            return self.hold_signal(snapshot, target_reason, {**base_metadata, **edge})
+            return self.hold_signal(
+                snapshot,
+                "target_move_too_small",
+                {
+                    **base_metadata,
+                    **edge,
+                    "volatility_atr_check": "pass",
+                    "target_move_check": "fail",
+                    "reward_cost_check": "fail",
+                    "detailed_rejection_reason": "target_move_too_small",
+                },
+            )
+        edge = {
+            **edge,
+            "volatility_atr_check": "pass",
+            "target_move_check": "pass",
+            "reward_cost_check": "pass",
+            "expected_net_profit_check": "pending_risk",
+        }
 
         volume_score = min(latest_volume / max(avg_volume * self.volume_multiplier, 1e-9), 2.0) / 2.0
         distance_score = min(breakout_distance / 0.003, 1.0)

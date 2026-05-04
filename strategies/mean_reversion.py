@@ -53,29 +53,70 @@ class MeanReversionStrategy(BaseStrategy):
         atr = max(self.atr(df), price * 0.0007)
         mean_distance = abs(price - rolling_mean)
         mean_distance_bps = mean_distance / max(price, 1e-9) * 10_000
+        atr_bps = atr / max(price, 1e-9) * 10_000
+        target_hint = self.target_hint_metadata(
+            min(mean_distance_bps, atr_bps * self.atr_take_profit_multiplier)
+        )
+        target_hint_pass = target_hint["target_move_bps"] >= target_hint["required_target_move_bps"]
+        raw_side = Side.HOLD
+        if zscore <= -self.entry_z:
+            raw_side = Side.BUY
+        elif zscore >= self.entry_z:
+            raw_side = Side.SELL
+        rsi_ok = (
+            (raw_side == Side.BUY and rsi < 38)
+            or (raw_side == Side.SELL and rsi > 62)
+        )
         base_metadata = {
             **self.indicator_metadata(df),
+            **self.diagnostic_metadata(
+                side_considered=raw_side,
+                rsi_check="pass" if rsi_ok else "fail",
+                volatility_atr_check="pass" if raw_side != Side.HOLD else "fail",
+                target_move_check="pass" if target_hint_pass else "fail",
+                reward_cost_check="pass" if target_hint_pass else "fail",
+                detailed_rejection_reason=(
+                    "target_move_too_small" if raw_side == Side.HOLD else "rsi_not_confirmed"
+                ),
+            ),
+            **target_hint,
             "zscore": zscore,
             "rolling_mean": rolling_mean,
             "mean_distance_bps": mean_distance_bps,
             "atr": atr,
-            "atr_bps": atr / max(price, 1e-9) * 10_000,
+            "atr_bps": atr_bps,
         }
 
-        if zscore <= -self.entry_z and rsi < 38:
-            side = Side.BUY
-        elif zscore >= self.entry_z and rsi > 62:
-            side = Side.SELL
-        else:
-            return self.hold_signal(snapshot, "mean_reversion_not_confirmed", base_metadata)
+        side = raw_side if rsi_ok else Side.HOLD
+        if side == Side.HOLD:
+            return self.hold_signal(snapshot, base_metadata["detailed_rejection_reason"], base_metadata)
 
         ema_gap_bps = abs(ema_fast - ema_slow) / max(price, 1e-9) * 10_000
         base_metadata["ema_gap_bps"] = ema_gap_bps
         trend_side = Side.BUY if ema_fast >= ema_slow else Side.SELL
         if side != trend_side and ema_gap_bps > 35:
-            return self.hold_signal(snapshot, "ema_trend_too_strong", base_metadata)
+            return self.hold_signal(
+                snapshot,
+                "trend_not_confirmed",
+                {**base_metadata, "ema_trend_check": "fail", "detailed_rejection_reason": "trend_not_confirmed"},
+            )
         if not self.macd_reversal_confirms(df, side):
-            return self.hold_signal(snapshot, "macd_reversal_not_confirmed", base_metadata)
+            return self.hold_signal(
+                snapshot,
+                "macd_not_confirmed",
+                {
+                    **base_metadata,
+                    "ema_trend_check": "pass",
+                    "macd_check": "fail",
+                    "detailed_rejection_reason": "macd_not_confirmed",
+                },
+            )
+        base_metadata = {
+            **base_metadata,
+            "ema_trend_check": "pass",
+            "macd_check": "pass",
+            "detailed_rejection_reason": "",
+        }
         stop_loss = price - side.direction * atr * self.atr_stop_loss_multiplier
         target_distance = min(mean_distance, atr * self.atr_take_profit_multiplier)
         take_profit = price + side.direction * target_distance
@@ -94,12 +135,34 @@ class MeanReversionStrategy(BaseStrategy):
         if mean_distance_bps < self.required_target_move_bps():
             return self.hold_signal(
                 snapshot,
-                "mean_distance_too_small_after_costs",
-                {**base_metadata, **edge},
+                "target_move_too_small",
+                {
+                    **base_metadata,
+                    **edge,
+                    "target_move_check": "fail",
+                    "reward_cost_check": "fail",
+                    "detailed_rejection_reason": "target_move_too_small",
+                },
             )
         target_reason = self.target_too_small_reason(edge)
         if target_reason:
-            return self.hold_signal(snapshot, target_reason, {**base_metadata, **edge})
+            return self.hold_signal(
+                snapshot,
+                "target_move_too_small",
+                {
+                    **base_metadata,
+                    **edge,
+                    "target_move_check": "fail",
+                    "reward_cost_check": "fail",
+                    "detailed_rejection_reason": "target_move_too_small",
+                },
+            )
+        edge = {
+            **edge,
+            "target_move_check": "pass",
+            "reward_cost_check": "pass",
+            "expected_net_profit_check": "pending_risk",
+        }
 
         stretch_score = min(abs(zscore) / 3.0, 1.0)
         rsi_score = min(abs(rsi - 50) / 35.0, 1.0)

@@ -139,12 +139,21 @@ class CandidateDiagnostics:
     symbol: str
     strategy_name: str
     side: Side
+    side_considered: str = "hold"
     confidence: float = 0.0
     market_score: float = 0.0
     performance_score: float = 0.0
     final_score: float = 0.0
     actionable: bool = False
     rejection_reason: str = ""
+    detailed_rejection_reason: str = ""
+    rsi_check: str = "not_checked"
+    ema_trend_check: str = "not_checked"
+    macd_check: str = "not_checked"
+    volatility_atr_check: str = "not_checked"
+    target_move_check: str = "not_checked"
+    reward_cost_check: str = "not_checked"
+    expected_net_profit_check: str = "not_checked"
     expected_gross_reward: float = 0.0
     estimated_costs: float = 0.0
     expected_net_profit: float = 0.0

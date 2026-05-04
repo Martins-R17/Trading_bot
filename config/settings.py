@@ -84,6 +84,7 @@ class TradingSettings:
     confidence_threshold: float = 0.8
     max_open_positions: int = 3
     paper_max_holding_iterations: int = 20
+    skip_duplicate_market_snapshots: bool = True
     ema_trend_deadband_bps: float = 1.0
     counter_trend_rsi_overbought: float = 70.0
     counter_trend_rsi_oversold: float = 30.0
@@ -215,6 +216,7 @@ def load_settings() -> Settings:
             confidence_threshold=_env_float("CONFIDENCE_THRESHOLD", 0.8),
             max_open_positions=_env_int("MAX_OPEN_POSITIONS", 3),
             paper_max_holding_iterations=_env_int("PAPER_MAX_HOLDING_ITERATIONS", 20),
+            skip_duplicate_market_snapshots=_env_bool("SKIP_DUPLICATE_MARKET_SNAPSHOTS", True),
             ema_trend_deadband_bps=_env_float("EMA_TREND_DEADBAND_BPS", 1.0),
             counter_trend_rsi_overbought=_env_float("COUNTER_TREND_RSI_OVERBOUGHT", 70.0),
             counter_trend_rsi_oversold=_env_float("COUNTER_TREND_RSI_OVERSOLD", 30.0),

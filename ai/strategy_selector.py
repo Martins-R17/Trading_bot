@@ -54,9 +54,21 @@ class StrategySelector:
                         symbol=snapshot.symbol,
                         strategy_name=strategy.name,
                         side=signal.side,
+                        side_considered=self._metadata_str(metadata, "side_considered", signal.side.value),
                         market_score=float(market_score),
                         performance_score=float(performance_score),
                         rejection_reason=str(metadata.get("reason", "not_actionable")),
+                        detailed_rejection_reason=self._detailed_rejection_reason(
+                            str(metadata.get("reason", "not_actionable")),
+                            metadata,
+                        ),
+                        rsi_check=self._metadata_str(metadata, "rsi_check"),
+                        ema_trend_check=self._metadata_str(metadata, "ema_trend_check"),
+                        macd_check=self._metadata_str(metadata, "macd_check"),
+                        volatility_atr_check=self._metadata_str(metadata, "volatility_atr_check"),
+                        target_move_check=self._metadata_str(metadata, "target_move_check"),
+                        reward_cost_check=self._metadata_str(metadata, "reward_cost_check"),
+                        expected_net_profit_check=self._metadata_str(metadata, "expected_net_profit_check"),
                         target_move_bps=self._metadata_float(metadata, "target_move_bps"),
                         reward_cost_ratio=self._metadata_float(metadata, "reward_cost_ratio"),
                         required_target_move_bps=self._metadata_float(metadata, "required_target_move_bps"),
@@ -76,10 +88,19 @@ class StrategySelector:
                         symbol=snapshot.symbol,
                         strategy_name=strategy.name,
                         side=signal.side,
+                        side_considered=self._metadata_str(metadata, "side_considered", signal.side.value),
                         market_score=float(market_score),
                         performance_score=float(performance_score),
                         actionable=True,
                         rejection_reason=counter_trend_reason,
+                        detailed_rejection_reason="trend_not_confirmed",
+                        rsi_check=self._metadata_str(metadata, "rsi_check"),
+                        ema_trend_check="fail",
+                        macd_check=self._metadata_str(metadata, "macd_check"),
+                        volatility_atr_check=self._metadata_str(metadata, "volatility_atr_check"),
+                        target_move_check=self._metadata_str(metadata, "target_move_check"),
+                        reward_cost_check=self._metadata_str(metadata, "reward_cost_check"),
+                        expected_net_profit_check=self._metadata_str(metadata, "expected_net_profit_check"),
                         target_move_bps=self._metadata_float(metadata, "target_move_bps"),
                         reward_cost_ratio=self._metadata_float(metadata, "reward_cost_ratio"),
                         required_target_move_bps=self._metadata_float(metadata, "required_target_move_bps"),
@@ -114,11 +135,20 @@ class StrategySelector:
                     symbol=snapshot.symbol,
                     strategy_name=strategy.name,
                     side=signal.side,
+                    side_considered=self._metadata_str(metadata, "side_considered", signal.side.value),
                     confidence=final_score,
                     market_score=float(market_score),
                     performance_score=float(performance_score),
                     final_score=final_score,
                     actionable=True,
+                    detailed_rejection_reason="",
+                    rsi_check=self._metadata_str(metadata, "rsi_check"),
+                    ema_trend_check=self._metadata_str(metadata, "ema_trend_check"),
+                    macd_check=self._metadata_str(metadata, "macd_check"),
+                    volatility_atr_check=self._metadata_str(metadata, "volatility_atr_check"),
+                    target_move_check=self._metadata_str(metadata, "target_move_check"),
+                    reward_cost_check=self._metadata_str(metadata, "reward_cost_check"),
+                    expected_net_profit_check=self._metadata_str(metadata, "expected_net_profit_check"),
                     target_move_bps=self._metadata_float(metadata, "target_move_bps"),
                     reward_cost_ratio=self._metadata_float(metadata, "reward_cost_ratio"),
                     required_target_move_bps=self._metadata_float(metadata, "required_target_move_bps"),
@@ -148,6 +178,7 @@ class StrategySelector:
             for candidate in candidate_diagnostics:
                 if candidate.strategy_name == best_signal.strategy_name:
                     candidate.rejection_reason = reason
+                    candidate.detailed_rejection_reason = "confidence_below_threshold"
                     break
             return SelectionResult(
                 best_signal,
@@ -174,6 +205,63 @@ class StrategySelector:
             return float(metadata.get(key, 0.0))
         except (TypeError, ValueError):
             return 0.0
+
+    def _metadata_str(
+        self,
+        metadata: dict[str, object],
+        key: str,
+        default: str = "not_checked",
+    ) -> str:
+        value = metadata.get(key, default)
+        return str(value) if value is not None else default
+
+    def _detailed_rejection_reason(self, reason: str, metadata: dict[str, object]) -> str:
+        detailed = self._metadata_str(metadata, "detailed_rejection_reason", "")
+        if detailed:
+            return detailed
+        reason_key = reason.split(":", 1)[0]
+        if reason_key in {
+            "trend_not_confirmed",
+            "ema_trend_filter",
+            "ema_trend_too_strong",
+            "counter_trend_short_blocked",
+            "counter_trend_long_blocked",
+        }:
+            return "trend_not_confirmed"
+        if reason_key in {
+            "macd_not_confirmed",
+            "macd_reversal_not_confirmed",
+            "macd_hist_not_strong_enough",
+        }:
+            return "macd_not_confirmed"
+        if reason_key in {
+            "rsi_not_confirmed",
+            "rsi_overextended",
+            "neutral_rsi_requires_stronger_liquidity",
+        }:
+            return "rsi_not_confirmed"
+        if reason_key in {
+            "volatility_too_low",
+            "range_expansion_not_confirmed",
+            "breakout_not_confirmed",
+            "volatility_target_too_small_after_costs",
+            "breakout_range_too_small_after_costs",
+            "zero_variance",
+        }:
+            return "volatility_too_low"
+        if reason_key in {
+            "target_move_too_small",
+            "target_move_too_small_after_costs",
+            "mean_distance_too_small_after_costs",
+        }:
+            return "target_move_too_small"
+        if reason_key == "expected_reward_below_costs":
+            return "reward_cost_ratio_too_low"
+        if reason_key == "expected_net_profit_too_low":
+            return "expected_net_profit_too_low"
+        if reason_key == "confidence_below_threshold":
+            return "confidence_below_threshold"
+        return reason_key
 
     def _liquidity_score(self, snapshot: MarketSnapshot) -> float:
         book = snapshot.order_book

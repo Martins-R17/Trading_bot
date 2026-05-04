@@ -76,6 +76,30 @@ class BaseStrategy(ABC):
             metadata={"reason": reason, **(metadata or {})},
         )
 
+    def diagnostic_metadata(
+        self,
+        side_considered: Side = Side.HOLD,
+        rsi_check: str = "not_checked",
+        ema_trend_check: str = "not_checked",
+        macd_check: str = "not_checked",
+        volatility_atr_check: str = "not_checked",
+        target_move_check: str = "not_checked",
+        reward_cost_check: str = "not_checked",
+        expected_net_profit_check: str = "not_checked",
+        detailed_rejection_reason: str = "",
+    ) -> dict[str, str]:
+        return {
+            "side_considered": side_considered.value,
+            "rsi_check": rsi_check,
+            "ema_trend_check": ema_trend_check,
+            "macd_check": macd_check,
+            "volatility_atr_check": volatility_atr_check,
+            "target_move_check": target_move_check,
+            "reward_cost_check": reward_cost_check,
+            "expected_net_profit_check": expected_net_profit_check,
+            "detailed_rejection_reason": detailed_rejection_reason,
+        }
+
     def has_enough_data(self, snapshot: MarketSnapshot) -> bool:
         return snapshot.ohlcv is not None and len(snapshot.ohlcv) >= self.min_bars
 
@@ -173,6 +197,16 @@ class BaseStrategy(ABC):
             "round_trip_cost_bps": float(self.round_trip_cost_bps),
             "min_reward_to_cost_ratio": float(self.min_reward_to_cost_ratio),
             **(extra or {}),
+        }
+
+    def target_hint_metadata(self, target_move_bps: float) -> dict[str, float]:
+        round_trip_cost_bps = max(self.round_trip_cost_bps, 1e-9)
+        return {
+            "target_move_bps": float(max(target_move_bps, 0.0)),
+            "required_target_move_bps": float(self.required_target_move_bps()),
+            "reward_cost_ratio": float(max(target_move_bps, 0.0) / round_trip_cost_bps),
+            "round_trip_cost_bps": float(self.round_trip_cost_bps),
+            "min_reward_to_cost_ratio": float(self.min_reward_to_cost_ratio),
         }
 
     def target_too_small_reason(self, edge: dict[str, float]) -> str:
