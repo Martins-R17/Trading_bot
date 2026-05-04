@@ -96,10 +96,32 @@ class RiskManager:
         expected_gross_reward = reward_per_unit * amount
         required_reward = round_trip_cost * self.settings.min_reward_cost_multiple
         expected_net_profit = expected_gross_reward - round_trip_cost
+        risk_metadata = {
+            "risk_capital": risk_capital,
+            "reward_risk_ratio": reward_risk_ratio,
+            "expected_gross_reward": expected_gross_reward,
+            "expected_net_profit": expected_net_profit,
+            "required_reward": required_reward,
+            "estimated_round_trip_cost": round_trip_cost,
+            "estimated_round_trip_cost_rate": self.settings.round_trip_taker_cost_rate,
+            "sentiment_multiplier": sentiment_multiplier,
+            "notional": notional,
+            "amount": amount,
+        }
         if expected_gross_reward < required_reward:
-            return self._reject(signal, "expected_reward_below_costs")
+            return self._reject(
+                signal,
+                "expected_reward_below_costs",
+                metadata=risk_metadata,
+                confidence=confidence,
+            )
         if expected_net_profit < self.settings.min_expected_net_profit:
-            return self._reject(signal, "expected_net_profit_too_low")
+            return self._reject(
+                signal,
+                "expected_net_profit_too_low",
+                metadata=risk_metadata,
+                confidence=confidence,
+            )
 
         if signal.strategy_name == "scalping_microstructure":
             scalping_reason = self._scalping_profitability_reason(
@@ -110,7 +132,12 @@ class RiskManager:
                 round_trip_cost,
             )
             if scalping_reason:
-                return self._reject(signal, scalping_reason)
+                return self._reject(
+                    signal,
+                    scalping_reason,
+                    metadata=risk_metadata,
+                    confidence=confidence,
+                )
 
         return RiskDecision(
             approved=True,
@@ -128,14 +155,7 @@ class RiskManager:
             strategy_name=signal.strategy_name,
             metadata={
                 **signal.metadata,
-                "risk_capital": risk_capital,
-                "reward_risk_ratio": reward_risk_ratio,
-                "expected_gross_reward": expected_gross_reward,
-                "expected_net_profit": expected_net_profit,
-                "required_reward": required_reward,
-                "estimated_round_trip_cost": round_trip_cost,
-                "estimated_round_trip_cost_rate": self.settings.round_trip_taker_cost_rate,
-                "sentiment_multiplier": sentiment_multiplier,
+                **risk_metadata,
             },
         )
 
@@ -268,7 +288,13 @@ class RiskManager:
             self.state.current_day = day
             self.state.daily_pnl = 0.0
 
-    def _reject(self, signal: StrategySignal, reason: str) -> RiskDecision:
+    def _reject(
+        self,
+        signal: StrategySignal,
+        reason: str,
+        metadata: dict[str, float] | None = None,
+        confidence: float = 0.0,
+    ) -> RiskDecision:
         return RiskDecision(
             approved=False,
             reason=reason,
@@ -277,5 +303,7 @@ class RiskManager:
             entry_price=signal.entry_price,
             stop_loss=signal.stop_loss,
             take_profit=signal.take_profit,
+            confidence=float(confidence),
             strategy_name=signal.strategy_name,
+            metadata={**signal.metadata, **(metadata or {})},
         )

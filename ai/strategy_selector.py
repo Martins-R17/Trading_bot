@@ -7,7 +7,7 @@ import logging
 import numpy as np
 
 from ai.confidence_model import ConfidenceModel
-from core.models import MarketSnapshot, SelectionResult, Side, StrategySignal
+from core.models import CandidateDiagnostics, MarketSnapshot, SelectionResult, Side, StrategySignal
 from strategies.base_strategy import BaseStrategy
 
 logger = logging.getLogger(__name__)
@@ -39,6 +39,7 @@ class StrategySelector:
         best_confidence = 0.0
         strategy_scores: dict[str, float] = {}
         rejections: dict[str, str] = {}
+        candidate_diagnostics: list[CandidateDiagnostics] = []
 
         for strategy in self.strategies:
             market_score = strategy.score_market(snapshot)
@@ -47,6 +48,17 @@ class StrategySelector:
 
             if not signal.is_actionable:
                 strategy_scores[strategy.name] = 0.0
+                candidate_diagnostics.append(
+                    CandidateDiagnostics(
+                        symbol=snapshot.symbol,
+                        strategy_name=strategy.name,
+                        side=signal.side,
+                        market_score=float(market_score),
+                        performance_score=float(performance_score),
+                        rejection_reason=str(signal.metadata.get("reason", "not_actionable")),
+                        metadata=dict(signal.metadata),
+                    )
+                )
                 continue
 
             counter_trend_reason = self._counter_trend_rejection_reason(signal, snapshot)
@@ -54,6 +66,18 @@ class StrategySelector:
                 strategy_scores[strategy.name] = 0.0
                 signal.metadata["rejection_reason"] = counter_trend_reason
                 rejections[strategy.name] = counter_trend_reason
+                candidate_diagnostics.append(
+                    CandidateDiagnostics(
+                        symbol=snapshot.symbol,
+                        strategy_name=strategy.name,
+                        side=signal.side,
+                        market_score=float(market_score),
+                        performance_score=float(performance_score),
+                        actionable=True,
+                        rejection_reason=counter_trend_reason,
+                        metadata=dict(signal.metadata),
+                    )
+                )
                 continue
 
             feature_snapshot = self.confidence_model.features(signal, snapshot, market_score, performance_score)
@@ -76,27 +100,62 @@ class StrategySelector:
             signal.metadata["raw_model_confidence"] = confidence
             signal.metadata["market_score"] = market_score
             signal.metadata["performance_score"] = performance_score
+            candidate_diagnostics.append(
+                CandidateDiagnostics(
+                    symbol=snapshot.symbol,
+                    strategy_name=strategy.name,
+                    side=signal.side,
+                    confidence=final_score,
+                    market_score=float(market_score),
+                    performance_score=float(performance_score),
+                    final_score=final_score,
+                    actionable=True,
+                    metadata=dict(signal.metadata),
+                )
+            )
 
             if final_score > best_confidence:
                 best_confidence = final_score
                 best_signal = signal
 
         if best_signal is None:
-            return SelectionResult(None, 0.0, strategy_scores, False, "no_actionable_strategy", rejections)
+            return SelectionResult(
+                None,
+                0.0,
+                strategy_scores,
+                False,
+                "no_actionable_strategy",
+                rejections,
+                candidate_diagnostics,
+            )
 
         best_signal.metadata["selector_score"] = best_confidence
         if best_confidence < self.confidence_threshold:
-            rejections[best_signal.strategy_name] = f"confidence_below_threshold:{best_confidence:.3f}"
+            reason = f"confidence_below_threshold:{best_confidence:.3f}"
+            rejections[best_signal.strategy_name] = reason
+            for candidate in candidate_diagnostics:
+                if candidate.strategy_name == best_signal.strategy_name:
+                    candidate.rejection_reason = reason
+                    break
             return SelectionResult(
                 best_signal,
                 best_confidence,
                 strategy_scores,
                 False,
-                f"confidence_below_threshold:{best_confidence:.3f}",
+                reason,
                 rejections,
+                candidate_diagnostics,
             )
 
-        return SelectionResult(best_signal, best_confidence, strategy_scores, True, "approved", rejections)
+        return SelectionResult(
+            best_signal,
+            best_confidence,
+            strategy_scores,
+            True,
+            "approved",
+            rejections,
+            candidate_diagnostics,
+        )
 
     def _liquidity_score(self, snapshot: MarketSnapshot) -> float:
         book = snapshot.order_book

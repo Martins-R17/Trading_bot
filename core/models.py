@@ -133,6 +133,25 @@ class StrategySignal:
 
 
 @dataclass(slots=True)
+class CandidateDiagnostics:
+    """Per-strategy candidate details used for missed-opportunity reporting."""
+
+    symbol: str
+    strategy_name: str
+    side: Side
+    confidence: float = 0.0
+    market_score: float = 0.0
+    performance_score: float = 0.0
+    final_score: float = 0.0
+    actionable: bool = False
+    rejection_reason: str = ""
+    expected_gross_reward: float = 0.0
+    estimated_costs: float = 0.0
+    expected_net_profit: float = 0.0
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(slots=True)
 class SelectionResult:
     """Best strategy signal selected by the AI selector."""
 
@@ -142,6 +161,7 @@ class SelectionResult:
     approved: bool
     reason: str
     rejections: dict[str, str] = field(default_factory=dict)
+    candidate_diagnostics: list[CandidateDiagnostics] = field(default_factory=list)
 
 
 @dataclass(slots=True)

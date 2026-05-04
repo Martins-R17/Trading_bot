@@ -8,6 +8,7 @@ import logging
 import math
 import threading
 import time
+from collections import Counter
 from typing import Any
 
 from ai.confidence_model import ConfidenceModel
@@ -78,6 +79,12 @@ class TradingBot:
         self.last_snapshots: dict[str, MarketSnapshot] = {}
         self.last_rejections: dict[str, str] = {}
         self.last_ai_reviews: dict[str, str] = {}
+        self.last_candidate_diagnostics: dict[str, dict[str, Any]] = {}
+        self.total_signals_checked = 0
+        self.total_candidates = 0
+        self.rejection_counts: Counter[str] = Counter()
+        self.rejection_bucket_counts: Counter[str] = Counter()
+        self.closest_candidate: dict[str, Any] | None = None
         self._logged_rejections: dict[str, str] = {}
         self._logged_ai_reviews: dict[str, str] = {}
 
@@ -151,6 +158,7 @@ class TradingBot:
         self._print_assumptions_dashboard()
         self._print_ai_review_dashboard()
         self._print_signal_dashboard()
+        self._print_candidate_diagnostics_dashboard()
         self._print_position_dashboard(mark_prices, unrealized_by_symbol)
         self._print_trade_dashboard()
         print("=" * 96)
@@ -217,6 +225,38 @@ class TradingBot:
                 print(f"{symbol}: rejected {reason}")
         if not printed:
             print("no recent rejections")
+
+    def _print_candidate_diagnostics_dashboard(self) -> None:
+        print("Candidate Diagnostics")
+        print(
+            f"signals_checked={self.total_signals_checked} | "
+            f"candidates={self.total_candidates} | "
+            f"no_actionable={self.rejection_bucket_counts.get('no_actionable_strategy', 0)} | "
+            f"expected_reward_below_costs={self.rejection_bucket_counts.get('expected_reward_below_costs', 0)} | "
+            f"confidence_below_threshold={self.rejection_bucket_counts.get('confidence_below_threshold', 0)} | "
+            f"trend_filter={self.rejection_bucket_counts.get('trend_filter', 0)} | "
+            f"spread_cost_filters={self.rejection_bucket_counts.get('spread_cost_filters', 0)}"
+        )
+        if not self.last_candidate_diagnostics:
+            print("no candidates checked yet")
+            return
+
+        print(
+            f"{'Symbol':<10} {'Strategy':<18} {'Side':<5} {'Conf':>6} "
+            f"{'Gross':>10} {'Costs':>10} {'Net':>10} Reason"
+        )
+        for symbol in self.settings.trading.symbols:
+            candidate = self.last_candidate_diagnostics.get(symbol)
+            if not candidate:
+                continue
+            print(
+                f"{symbol:<10} {candidate['strategy_name']:<18} {candidate['side']:<5} "
+                f"{candidate['confidence']:>6.3f} "
+                f"{self._signed_money(candidate['expected_gross_reward']):>10} "
+                f"{self._money(candidate['estimated_costs']):>10} "
+                f"{self._signed_money(candidate['expected_net_profit']):>10} "
+                f"{candidate['rejection_reason']}"
+            )
 
     def _print_position_dashboard(
         self,
@@ -285,6 +325,12 @@ class TradingBot:
             f"win_rate={win_rate:.1f}%"
         )
         print(f"best_strategy={best_strategy} | worst_strategy={worst_strategy}")
+        print(
+            f"total_candidates={self.total_candidates} | "
+            f"total_signals_checked={self.total_signals_checked}"
+        )
+        print(f"rejection_counts={self._format_rejection_counts()}")
+        print(f"closest_to_approved={self._format_closest_candidate()}")
         print("=" * 96)
 
     def _best_worst_strategy(self) -> tuple[str, str]:
@@ -365,6 +411,8 @@ class TradingBot:
             return
 
         selection = self.selector.select(snapshot)
+        self._record_signal_checks(selection)
+        candidate = self._candidate_from_selection(snapshot, selection)
         self._record_selection_rejection(snapshot.symbol, selection)
 
         logger.debug(
@@ -375,6 +423,7 @@ class TradingBot:
         )
 
         if not selection.approved or selection.signal is None:
+            self._record_candidate_diagnostic(candidate)
             return
 
         decision = self.risk_manager.assess_trade(
@@ -384,8 +433,11 @@ class TradingBot:
             open_positions=self.order_manager.open_position_count,
             max_open_positions=self.settings.trading.max_open_positions,
         )
+        candidate = self._candidate_from_decision(candidate, decision)
 
         if not decision.approved:
+            candidate["rejection_reason"] = decision.reason
+            self._record_candidate_diagnostic(candidate)
             self._record_rejection(
                 snapshot.symbol,
                 f"{selection.signal.strategy_name}:risk:{decision.reason}",
@@ -405,6 +457,8 @@ class TradingBot:
         decision.metadata["ai_trade_review"] = ai_review.to_metadata()
         self._record_ai_review(snapshot.symbol, ai_review)
         if not ai_review.approved:
+            candidate["rejection_reason"] = f"ai_review:{ai_review.reason}"
+            self._record_candidate_diagnostic(candidate)
             self._record_rejection(
                 snapshot.symbol,
                 f"{selection.signal.strategy_name}:ai_review:{ai_review.reason}",
@@ -421,6 +475,8 @@ class TradingBot:
         result = await self.executor.execute(decision)
 
         if result.success:
+            candidate["rejection_reason"] = "approved_opened"
+            self._record_candidate_diagnostic(candidate)
             position = self.order_manager.open_from_fill(
                 result,
                 decision,
@@ -444,6 +500,8 @@ class TradingBot:
                     result.message,
                 )
         else:
+            candidate["rejection_reason"] = f"execution_failed:{result.message}"
+            self._record_candidate_diagnostic(candidate)
             logger.warning(
                 "Execution failed for %s: %s",
                 decision.symbol,
@@ -524,6 +582,174 @@ class TradingBot:
             return
         self._logged_rejections[symbol] = reason
         logger.info("Signal rejected %s: %s", symbol, reason)
+
+    def _record_signal_checks(self, selection: Any) -> None:
+        diagnostics = getattr(selection, "candidate_diagnostics", None)
+        if diagnostics:
+            self.total_signals_checked += len(diagnostics)
+            return
+        self.total_signals_checked += len(getattr(selection, "strategy_scores", {}) or {})
+
+    def _candidate_from_selection(
+        self,
+        snapshot: MarketSnapshot,
+        selection: Any,
+    ) -> dict[str, Any]:
+        diagnostics = list(getattr(selection, "candidate_diagnostics", []) or [])
+        best = None
+        if selection.signal is not None:
+            for candidate in diagnostics:
+                if candidate.strategy_name == selection.signal.strategy_name:
+                    best = candidate
+                    break
+        if best is None and diagnostics:
+            best = max(
+                diagnostics,
+                key=lambda candidate: (
+                    1 if candidate.actionable else 0,
+                    candidate.confidence,
+                    candidate.market_score,
+                ),
+            )
+
+        if best is None:
+            return {
+                "symbol": snapshot.symbol,
+                "strategy_name": "none",
+                "side": "hold",
+                "confidence": self._finite_number(selection.confidence),
+                "market_score": 0.0,
+                "expected_gross_reward": 0.0,
+                "estimated_costs": 0.0,
+                "expected_net_profit": 0.0,
+                "rejection_reason": selection.reason,
+                "has_economics": False,
+            }
+
+        reason = selection.reason
+        if selection.approved:
+            reason = "pending_risk_review"
+        elif selection.reason == "no_actionable_strategy" and best.rejection_reason:
+            reason = f"no_actionable_strategy:{best.rejection_reason}"
+        elif best.rejection_reason:
+            reason = best.rejection_reason
+
+        return {
+            "symbol": snapshot.symbol,
+            "strategy_name": best.strategy_name,
+            "side": best.side.value,
+            "confidence": self._finite_number(best.confidence, selection.confidence),
+            "market_score": self._finite_number(best.market_score),
+            "expected_gross_reward": self._finite_number(best.expected_gross_reward),
+            "estimated_costs": self._finite_number(best.estimated_costs),
+            "expected_net_profit": self._finite_number(best.expected_net_profit),
+            "rejection_reason": reason,
+            "has_economics": False,
+        }
+
+    def _candidate_from_decision(
+        self,
+        candidate: dict[str, Any],
+        decision: Any,
+    ) -> dict[str, Any]:
+        updated = dict(candidate)
+        metadata = decision.metadata or {}
+        estimated_costs = self._finite_number(metadata.get("estimated_round_trip_cost"))
+        updated.update(
+            {
+                "strategy_name": decision.strategy_name or candidate["strategy_name"],
+                "side": decision.side.value,
+                "confidence": self._finite_number(decision.confidence, candidate["confidence"]),
+                "expected_gross_reward": self._finite_number(
+                    metadata.get("expected_gross_reward")
+                ),
+                "estimated_costs": estimated_costs,
+                "expected_net_profit": self._finite_number(
+                    metadata.get("expected_net_profit")
+                ),
+                "rejection_reason": "pending_ai_review" if decision.approved else decision.reason,
+                "has_economics": estimated_costs > 0,
+            }
+        )
+        return updated
+
+    def _record_candidate_diagnostic(self, candidate: dict[str, Any]) -> None:
+        self.total_candidates += 1
+        self.last_candidate_diagnostics[candidate["symbol"]] = dict(candidate)
+
+        reason = str(candidate.get("rejection_reason") or "unknown")
+        if reason.startswith("approved"):
+            return
+
+        reason_key = self._reason_key(reason)
+        self.rejection_counts[reason_key] += 1
+        for bucket in self._rejection_buckets(reason, reason_key):
+            self.rejection_bucket_counts[bucket] += 1
+
+        if self.closest_candidate is None:
+            self.closest_candidate = dict(candidate)
+            return
+        if self._candidate_rank(candidate) > self._candidate_rank(self.closest_candidate):
+            self.closest_candidate = dict(candidate)
+
+    def _reason_key(self, reason: str) -> str:
+        reason = reason.strip() or "unknown"
+        return reason.split(":", 1)[0]
+
+    def _rejection_buckets(self, reason: str, reason_key: str) -> list[str]:
+        text = reason.lower()
+        buckets: list[str] = []
+        if reason_key == "no_actionable_strategy":
+            buckets.append("no_actionable_strategy")
+        if reason_key == "expected_reward_below_costs":
+            buckets.append("expected_reward_below_costs")
+        if reason_key == "confidence_below_threshold":
+            buckets.append("confidence_below_threshold")
+        if "counter_trend" in text or "ema_trend" in text or "trend_filter" in text:
+            buckets.append("trend_filter")
+        if any(
+            token in text
+            for token in (
+                "spread",
+                "cost",
+                "expected_reward",
+                "expected_net_profit",
+                "net_profit",
+                "target_move",
+            )
+        ):
+            buckets.append("spread_cost_filters")
+        return buckets
+
+    def _candidate_rank(self, candidate: dict[str, Any]) -> tuple[int, float, float, float]:
+        has_economics = 1 if candidate.get("has_economics") else 0
+        return (
+            has_economics,
+            self._finite_number(candidate.get("expected_net_profit")),
+            self._finite_number(candidate.get("expected_gross_reward")),
+            self._finite_number(candidate.get("confidence")),
+        )
+
+    def _format_rejection_counts(self) -> str:
+        if not self.rejection_counts:
+            return "none"
+        return ", ".join(
+            f"{reason}={count}"
+            for reason, count in self.rejection_counts.most_common()
+        )
+
+    def _format_closest_candidate(self) -> str:
+        candidate = self.closest_candidate
+        if candidate is None:
+            return "none"
+        return (
+            f"{candidate['symbol']} {candidate['strategy_name']} {candidate['side']} "
+            f"conf={candidate['confidence']:.3f} "
+            f"gross={self._signed_money(candidate['expected_gross_reward'])} "
+            f"costs={self._money(candidate['estimated_costs'])} "
+            f"net={self._signed_money(candidate['expected_net_profit'])} "
+            f"reason={candidate['rejection_reason']}"
+        )
 
     def _build_ai_trade_summary(
         self,
@@ -694,6 +920,14 @@ class TradingBot:
                 self.settings.trading.paper_trade
             ),
             "last_ai_reviews": dict(self.last_ai_reviews),
+            "last_candidate_diagnostics": dict(self.last_candidate_diagnostics),
+            "candidate_counters": {
+                "total_signals_checked": self.total_signals_checked,
+                "total_candidates": self.total_candidates,
+                "rejections_by_reason": dict(self.rejection_counts),
+                "rejection_buckets": dict(self.rejection_bucket_counts),
+                "closest_candidate": dict(self.closest_candidate or {}),
+            },
             "sentiment": self.sentiment_by_symbol,
             "iterations": self.iterations,
             "paper_max_holding_iterations": self.settings.trading.paper_max_holding_iterations,
