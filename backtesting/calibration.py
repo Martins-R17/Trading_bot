@@ -1,0 +1,490 @@
+"""Historical strategy edge calibration.
+
+This module is intentionally separate from the live/paper trading loop. It scans
+historical OHLCV candles and reports whether existing strategies can produce
+fee-aware candidates under production thresholds and under calibration sweeps.
+"""
+
+from __future__ import annotations
+
+import argparse
+from collections import defaultdict
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any
+
+import pandas as pd
+
+from config.settings import Settings, load_settings
+from core.models import MarketSnapshot, Side
+from data.preprocess import DataPreprocessor
+from strategies import (
+    BreakoutStrategy,
+    MeanReversionStrategy,
+    MomentumStrategy,
+    ScalpingMicrostructureStrategy,
+)
+from strategies.base_strategy import BaseStrategy
+
+
+DEFAULT_TARGET_SWEEP = (25.0, 50.0, 75.0, 100.0)
+DEFAULT_REWARD_COST_SWEEP = (1.5, 2.0, 3.0)
+CORE_CHECKS = ("rsi_check", "ema_trend_check", "macd_check", "volatility_atr_check")
+
+
+@dataclass
+class StrategyCalibrationStats:
+    """Per-symbol, per-strategy production-threshold funnel."""
+
+    symbol: str
+    strategy_name: str
+    candles_tested: int = 0
+    signals_considered: int = 0
+    passing_core_filters: int = 0
+    passing_target_move_bps: int = 0
+    passing_reward_cost_ratio: int = 0
+    passing_expected_net_profit: int = 0
+    would_be_trades: int = 0
+    target_move_sum: float = 0.0
+    reward_cost_sum: float = 0.0
+    expected_net_profit_sum: float = 0.0
+
+    def record_considered(
+        self,
+        target_move_bps: float,
+        reward_cost_ratio: float,
+        expected_net_profit: float,
+    ) -> None:
+        self.signals_considered += 1
+        self.target_move_sum += target_move_bps
+        self.reward_cost_sum += reward_cost_ratio
+        self.expected_net_profit_sum += expected_net_profit
+
+    @property
+    def average_target_move_bps(self) -> float:
+        return self._average(self.target_move_sum)
+
+    @property
+    def average_reward_cost_ratio(self) -> float:
+        return self._average(self.reward_cost_sum)
+
+    @property
+    def average_expected_net_profit(self) -> float:
+        return self._average(self.expected_net_profit_sum)
+
+    def _average(self, total: float) -> float:
+        if self.signals_considered <= 0:
+            return 0.0
+        return total / self.signals_considered
+
+
+@dataclass
+class SweepStats:
+    """Threshold-sweep result for one symbol/strategy/threshold combination."""
+
+    symbol: str
+    strategy_name: str
+    min_target_move_bps: float
+    min_reward_cost_ratio: float
+    pass_count: int = 0
+    expected_net_profit_sum: float = 0.0
+
+    @property
+    def average_expected_net_profit(self) -> float:
+        if self.pass_count <= 0:
+            return 0.0
+        return self.expected_net_profit_sum / self.pass_count
+
+
+@dataclass
+class CalibrationResult:
+    """Complete calibration report data."""
+
+    production_target_move_bps: float
+    production_reward_cost_ratio: float
+    production_min_expected_net_profit: float
+    diagnostic_notional: float
+    rows: list[StrategyCalibrationStats] = field(default_factory=list)
+    sweep_rows: list[SweepStats] = field(default_factory=list)
+
+
+class HistoricalStrategyCalibrator:
+    """Fast strategy-edge calibration over historical candles."""
+
+    def __init__(
+        self,
+        settings: Settings,
+        target_sweep: tuple[float, ...] = DEFAULT_TARGET_SWEEP,
+        reward_cost_sweep: tuple[float, ...] = DEFAULT_REWARD_COST_SWEEP,
+        diagnostic_notional: float | None = None,
+    ) -> None:
+        self.settings = settings
+        self.target_sweep = target_sweep
+        self.reward_cost_sweep = reward_cost_sweep
+        self.diagnostic_notional = diagnostic_notional or self._default_diagnostic_notional()
+
+    def run(self, historical_by_symbol: dict[str, pd.DataFrame]) -> CalibrationResult:
+        rows: list[StrategyCalibrationStats] = []
+        sweep_rows: list[SweepStats] = []
+
+        for symbol, raw_df in historical_by_symbol.items():
+            df = DataPreprocessor.add_features(DataPreprocessor.normalize_ohlcv(raw_df))
+            for strategy in self._build_strategies():
+                stats, sweeps = self._calibrate_strategy(symbol, df, strategy)
+                rows.append(stats)
+                sweep_rows.extend(sweeps)
+
+        return CalibrationResult(
+            production_target_move_bps=self.settings.risk.min_target_move_bps,
+            production_reward_cost_ratio=self.settings.risk.min_reward_to_cost_ratio,
+            production_min_expected_net_profit=self.settings.risk.min_expected_net_profit_usd,
+            diagnostic_notional=self.diagnostic_notional,
+            rows=rows,
+            sweep_rows=sweep_rows,
+        )
+
+    def _calibrate_strategy(
+        self,
+        symbol: str,
+        df: pd.DataFrame,
+        strategy: BaseStrategy,
+    ) -> tuple[StrategyCalibrationStats, list[SweepStats]]:
+        stats = StrategyCalibrationStats(symbol=symbol, strategy_name=strategy.name)
+        sweep_lookup = {
+            (target, reward): SweepStats(
+                symbol=symbol,
+                strategy_name=strategy.name,
+                min_target_move_bps=target,
+                min_reward_cost_ratio=reward,
+            )
+            for target in self.target_sweep
+            for reward in self.reward_cost_sweep
+        }
+
+        for index in range(strategy.min_bars, len(df)):
+            stats.candles_tested += 1
+            window = df.iloc[: index + 1]
+            snapshot = MarketSnapshot(
+                symbol=symbol,
+                timestamp=self._finite_number(window["timestamp"].iloc[-1]),
+                ohlcv=window,
+                volatility=DataPreprocessor.realized_volatility(window),
+            )
+            signal = strategy.generate_signal(snapshot)
+            metadata = dict(signal.metadata)
+            side_considered = str(metadata.get("side_considered", signal.side.value)).lower()
+            has_directional_setup = side_considered in {"buy", "sell"} or signal.side in {Side.BUY, Side.SELL}
+            if not has_directional_setup:
+                continue
+
+            target_move_bps = self._finite_number(metadata.get("target_move_bps"))
+            reward_cost_ratio = self._finite_number(metadata.get("reward_cost_ratio"))
+            expected_net_profit = self._expected_net_profit(target_move_bps)
+            stats.record_considered(target_move_bps, reward_cost_ratio, expected_net_profit)
+
+            core_filters_pass = self._core_filters_pass(metadata)
+            if not core_filters_pass:
+                continue
+            stats.passing_core_filters += 1
+
+            target_pass = target_move_bps >= self.settings.risk.min_target_move_bps
+            if not target_pass:
+                self._record_sweeps(sweep_lookup, target_move_bps, reward_cost_ratio, expected_net_profit)
+                continue
+            stats.passing_target_move_bps += 1
+
+            reward_cost_pass = reward_cost_ratio >= self.settings.risk.min_reward_to_cost_ratio
+            if not reward_cost_pass:
+                self._record_sweeps(sweep_lookup, target_move_bps, reward_cost_ratio, expected_net_profit)
+                continue
+            stats.passing_reward_cost_ratio += 1
+
+            net_pass = expected_net_profit >= self.settings.risk.min_expected_net_profit_usd
+            if net_pass:
+                stats.passing_expected_net_profit += 1
+                stats.would_be_trades += 1
+
+            self._record_sweeps(sweep_lookup, target_move_bps, reward_cost_ratio, expected_net_profit)
+
+        return stats, list(sweep_lookup.values())
+
+    def _record_sweeps(
+        self,
+        sweep_lookup: dict[tuple[float, float], SweepStats],
+        target_move_bps: float,
+        reward_cost_ratio: float,
+        expected_net_profit: float,
+    ) -> None:
+        if expected_net_profit < self.settings.risk.min_expected_net_profit_usd:
+            return
+        for (target_threshold, reward_threshold), sweep in sweep_lookup.items():
+            if target_move_bps >= target_threshold and reward_cost_ratio >= reward_threshold:
+                sweep.pass_count += 1
+                sweep.expected_net_profit_sum += expected_net_profit
+
+    def _core_filters_pass(self, metadata: dict[str, Any]) -> bool:
+        return all(str(metadata.get(check, "not_checked")) == "pass" for check in CORE_CHECKS)
+
+    def _expected_net_profit(self, target_move_bps: float) -> float:
+        expected_gross_reward = self.diagnostic_notional * max(target_move_bps, 0.0) / 10_000
+        estimated_costs = self.diagnostic_notional * self.settings.risk.round_trip_taker_cost_rate
+        return expected_gross_reward - estimated_costs
+
+    def _default_diagnostic_notional(self) -> float:
+        return max(
+            self.settings.risk.min_position_notional,
+            self.settings.risk.initial_equity * self.settings.risk.max_position_notional_fraction,
+        )
+
+    def _build_strategies(self) -> list[BaseStrategy]:
+        edge_config = {
+            "min_target_move_bps": self.settings.risk.min_target_move_bps,
+            "atr_take_profit_multiplier": self.settings.risk.atr_take_profit_multiplier,
+            "atr_stop_loss_multiplier": self.settings.risk.atr_stop_loss_multiplier,
+            "min_reward_to_cost_ratio": self.settings.risk.min_reward_to_cost_ratio,
+            "round_trip_cost_bps": self.settings.risk.round_trip_taker_cost_bps,
+        }
+        strategies: list[BaseStrategy] = [
+            MomentumStrategy(**edge_config),
+            MeanReversionStrategy(**edge_config),
+            BreakoutStrategy(**edge_config),
+        ]
+        if self.settings.trading.enable_scalping_microstructure:
+            strategies.append(
+                ScalpingMicrostructureStrategy(max_spread_bps=self.settings.risk.max_spread_bps)
+            )
+        return strategies
+
+    def _finite_number(self, value: Any, default: float = 0.0) -> float:
+        try:
+            number = float(value)
+        except (TypeError, ValueError):
+            return default
+        if pd.isna(number):
+            return default
+        return number
+
+
+def load_csv(path: Path, limit: int | None = None) -> pd.DataFrame:
+    """Load OHLCV CSV data with either named or first-six ccxt-style columns."""
+
+    df = pd.read_csv(path)
+    if "timestamp" not in df.columns:
+        for alternate in ("time", "datetime", "date"):
+            if alternate in df.columns:
+                df = df.rename(columns={alternate: "timestamp"})
+                break
+
+    if "timestamp" not in df.columns and len(df.columns) >= 6:
+        renamed = df.iloc[:, :6].copy()
+        renamed.columns = ["timestamp", "open", "high", "low", "close", "volume"]
+        df = renamed
+
+    if "timestamp" in df.columns and not pd.api.types.is_numeric_dtype(df["timestamp"]):
+        parsed = pd.to_datetime(df["timestamp"], errors="coerce", utc=True)
+        df["timestamp"] = parsed.map(
+            lambda value: value.timestamp() * 1000 if pd.notna(value) else pd.NA
+        )
+
+    required = {"timestamp", "open", "high", "low", "close", "volume"}
+    missing = sorted(required.difference(df.columns))
+    if missing:
+        raise ValueError(f"{path} is missing OHLCV columns: {missing}")
+
+    if limit is not None and limit > 0:
+        df = df.tail(limit)
+    return df[["timestamp", "open", "high", "low", "close", "volume"]].copy()
+
+
+def load_historical_inputs(
+    symbols: tuple[str, ...],
+    csv_mappings: list[str],
+    data_dir: Path | None,
+    timeframe: str,
+    limit: int | None,
+) -> dict[str, pd.DataFrame]:
+    mapping = parse_csv_mappings(csv_mappings)
+    data: dict[str, pd.DataFrame] = {}
+    for symbol in symbols:
+        path = mapping.get(symbol)
+        if path is None and data_dir is not None:
+            path = find_symbol_csv(data_dir, symbol, timeframe)
+        if path is None:
+            raise FileNotFoundError(
+                f"No historical CSV provided for {symbol}. Use --csv {symbol}=path.csv or --data-dir."
+            )
+        data[symbol] = load_csv(path, limit=limit)
+    return data
+
+
+def parse_csv_mappings(items: list[str]) -> dict[str, Path]:
+    mappings: dict[str, Path] = {}
+    for item in items:
+        if "=" not in item:
+            raise ValueError(f"--csv must use SYMBOL=PATH format, got {item!r}")
+        symbol, raw_path = item.split("=", 1)
+        mappings[symbol.strip()] = Path(raw_path.strip())
+    return mappings
+
+
+def find_symbol_csv(data_dir: Path, symbol: str, timeframe: str) -> Path | None:
+    compact = symbol.replace("/", "")
+    underscore = symbol.replace("/", "_")
+    dash = symbol.replace("/", "-")
+    candidates = [
+        f"{compact}.csv",
+        f"{underscore}.csv",
+        f"{dash}.csv",
+        f"{compact}_{timeframe}.csv",
+        f"{underscore}_{timeframe}.csv",
+        f"{dash}_{timeframe}.csv",
+    ]
+    for name in candidates:
+        path = data_dir / name
+        if path.exists():
+            return path
+    return None
+
+
+def print_report(result: CalibrationResult) -> None:
+    print("Historical Strategy Edge Calibration")
+    print("calibration only")
+    print("production thresholds unchanged")
+    print(
+        f"production_min_target_move_bps={result.production_target_move_bps:.2f} | "
+        f"production_min_reward_cost_ratio={result.production_reward_cost_ratio:.2f}x | "
+        f"production_min_expected_net_profit=${result.production_min_expected_net_profit:.2f} | "
+        f"diagnostic_notional=${result.diagnostic_notional:,.2f}"
+    )
+    print()
+    print("Per Strategy And Symbol")
+    print(
+        f"{'Symbol':<10} {'Strategy':<18} {'Candles':>8} {'Signals':>8} "
+        f"{'CoreOK':>8} {'TargetOK':>8} {'RewardOK':>8} {'NetOK':>8} "
+        f"{'Trades':>8} {'AvgTgt':>8} {'AvgR/C':>8} {'AvgNet':>10}"
+    )
+    for row in result.rows:
+        print(
+            f"{row.symbol:<10} {row.strategy_name:<18} {row.candles_tested:>8} "
+            f"{row.signals_considered:>8} {row.passing_core_filters:>8} "
+            f"{row.passing_target_move_bps:>8} {row.passing_reward_cost_ratio:>8} "
+            f"{row.passing_expected_net_profit:>8} {row.would_be_trades:>8} "
+            f"{row.average_target_move_bps:>8.2f} {row.average_reward_cost_ratio:>8.2f} "
+            f"${row.average_expected_net_profit:>9.2f}"
+        )
+
+    print()
+    print("Threshold Sweep")
+    print(
+        f"{'Symbol':<10} {'Strategy':<18} {'Target':>8} {'R/C':>8} "
+        f"{'Trades':>8} {'AvgNet':>10} {'TotalNet':>10}"
+    )
+    for row in result.sweep_rows:
+        print(
+            f"{row.symbol:<10} {row.strategy_name:<18} {row.min_target_move_bps:>8.2f} "
+            f"{row.min_reward_cost_ratio:>8.2f} {row.pass_count:>8} "
+            f"${row.average_expected_net_profit:>9.2f} ${row.expected_net_profit_sum:>9.2f}"
+        )
+
+    print()
+    print("Best Threshold Combinations By Trade Count")
+    for line in best_threshold_lines(result.sweep_rows, key="count"):
+        print(line)
+
+    print()
+    print("Best Threshold Combinations By Expected Net Profit")
+    for line in best_threshold_lines(result.sweep_rows, key="net"):
+        print(line)
+
+
+def best_threshold_lines(rows: list[SweepStats], key: str) -> list[str]:
+    grouped: dict[tuple[float, float], dict[str, float]] = defaultdict(
+        lambda: {"count": 0.0, "net": 0.0}
+    )
+    for row in rows:
+        bucket = grouped[(row.min_target_move_bps, row.min_reward_cost_ratio)]
+        bucket["count"] += row.pass_count
+        bucket["net"] += row.expected_net_profit_sum
+
+    if key == "count":
+        sorted_items = sorted(grouped.items(), key=lambda item: (item[1]["count"], item[1]["net"]), reverse=True)
+    else:
+        sorted_items = sorted(grouped.items(), key=lambda item: (item[1]["net"], item[1]["count"]), reverse=True)
+
+    if not sorted_items:
+        return ["none"]
+    return [
+        f"target={target:.2f}bps reward_cost={reward:.2f}x "
+        f"trades={int(values['count'])} expected_net=${values['net']:.2f}"
+        for (target, reward), values in sorted_items[:5]
+    ]
+
+
+def parse_float_list(raw: str) -> tuple[float, ...]:
+    return tuple(float(item.strip()) for item in raw.split(",") if item.strip())
+
+
+def build_arg_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description="Calibrate strategy edge on historical OHLCV candles.")
+    parser.add_argument(
+        "--symbols",
+        default=",".join(load_settings().trading.symbols),
+        help="Comma-separated symbols to calibrate, e.g. BTC/USDT,ETH/USDT.",
+    )
+    parser.add_argument(
+        "--csv",
+        action="append",
+        default=[],
+        help="Historical CSV mapping in SYMBOL=PATH format. Can be repeated.",
+    )
+    parser.add_argument(
+        "--data-dir",
+        type=Path,
+        help="Directory containing symbol CSVs like BTCUSDT.csv or BTC_USDT_1m.csv.",
+    )
+    parser.add_argument(
+        "--limit",
+        type=int,
+        help="Optional number of most recent candles to use from each CSV.",
+    )
+    parser.add_argument(
+        "--target-sweep",
+        default="25,50,75,100",
+        help="Comma-separated MIN_TARGET_MOVE_BPS sweep values.",
+    )
+    parser.add_argument(
+        "--reward-cost-sweep",
+        default="1.5,2.0,3.0",
+        help="Comma-separated reward/cost ratio sweep values.",
+    )
+    parser.add_argument(
+        "--diagnostic-notional",
+        type=float,
+        help="Optional notional used only for calibration expected net profit.",
+    )
+    return parser
+
+
+def main() -> None:
+    settings = load_settings()
+    parser = build_arg_parser()
+    args = parser.parse_args()
+    symbols = tuple(symbol.strip() for symbol in args.symbols.split(",") if symbol.strip())
+    historical = load_historical_inputs(
+        symbols=symbols,
+        csv_mappings=args.csv,
+        data_dir=args.data_dir,
+        timeframe=settings.trading.timeframe,
+        limit=args.limit,
+    )
+    calibrator = HistoricalStrategyCalibrator(
+        settings=settings,
+        target_sweep=parse_float_list(args.target_sweep),
+        reward_cost_sweep=parse_float_list(args.reward_cost_sweep),
+        diagnostic_notional=args.diagnostic_notional,
+    )
+    print_report(calibrator.run(historical))
+
+
+if __name__ == "__main__":
+    main()
