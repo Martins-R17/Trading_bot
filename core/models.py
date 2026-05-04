@@ -148,6 +148,9 @@ class CandidateDiagnostics:
     expected_gross_reward: float = 0.0
     estimated_costs: float = 0.0
     expected_net_profit: float = 0.0
+    target_move_bps: float = 0.0
+    reward_cost_ratio: float = 0.0
+    required_target_move_bps: float = 0.0
     metadata: dict[str, Any] = field(default_factory=dict)
 
 
