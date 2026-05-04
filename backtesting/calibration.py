@@ -32,6 +32,52 @@ DEFAULT_REWARD_COST_SWEEP = (1.5, 2.0, 3.0)
 CORE_CHECKS = ("rsi_check", "ema_trend_check", "macd_check", "volatility_atr_check")
 
 
+def evaluate_thresholds(
+    target_move_bps: float,
+    reward_cost_ratio: float,
+    expected_net_profit: float,
+    min_target_move_bps: float,
+    min_reward_cost_ratio: float,
+    min_expected_net_profit: float,
+) -> "ThresholdGateResult":
+    """Evaluate threshold gates independently."""
+
+    return ThresholdGateResult(
+        target_pass=target_move_bps >= min_target_move_bps,
+        reward_cost_pass=reward_cost_ratio >= min_reward_cost_ratio,
+        expected_net_pass=expected_net_profit >= min_expected_net_profit,
+    )
+
+
+def validate_threshold_gate(
+    gate: "ThresholdGateResult",
+    target_move_bps: float,
+    reward_cost_ratio: float,
+    expected_net_profit: float,
+    min_target_move_bps: float,
+    min_reward_cost_ratio: float,
+    min_expected_net_profit: float,
+    label: str,
+) -> None:
+    """Fail fast if a counted gate would violate its threshold."""
+
+    if gate.target_pass and target_move_bps < min_target_move_bps:
+        raise AssertionError(
+            f"{label}: target gate violation target={target_move_bps:.4f} "
+            f"threshold={min_target_move_bps:.4f}"
+        )
+    if gate.reward_cost_pass and reward_cost_ratio < min_reward_cost_ratio:
+        raise AssertionError(
+            f"{label}: reward/cost gate violation ratio={reward_cost_ratio:.4f} "
+            f"threshold={min_reward_cost_ratio:.4f}"
+        )
+    if gate.expected_net_pass and expected_net_profit < min_expected_net_profit:
+        raise AssertionError(
+            f"{label}: expected net gate violation net={expected_net_profit:.4f} "
+            f"threshold={min_expected_net_profit:.4f}"
+        )
+
+
 @dataclass
 class StrategyCalibrationStats:
     """Per-symbol, per-strategy production-threshold funnel."""
@@ -95,6 +141,49 @@ class SweepStats:
             return 0.0
         return self.expected_net_profit_sum / self.pass_count
 
+    def record_if_passes(
+        self,
+        target_move_bps: float,
+        reward_cost_ratio: float,
+        expected_net_profit: float,
+        min_expected_net_profit: float,
+    ) -> None:
+        gate = evaluate_thresholds(
+            target_move_bps=target_move_bps,
+            reward_cost_ratio=reward_cost_ratio,
+            expected_net_profit=expected_net_profit,
+            min_target_move_bps=self.min_target_move_bps,
+            min_reward_cost_ratio=self.min_reward_cost_ratio,
+            min_expected_net_profit=min_expected_net_profit,
+        )
+        validate_threshold_gate(
+            gate,
+            target_move_bps=target_move_bps,
+            reward_cost_ratio=reward_cost_ratio,
+            expected_net_profit=expected_net_profit,
+            min_target_move_bps=self.min_target_move_bps,
+            min_reward_cost_ratio=self.min_reward_cost_ratio,
+            min_expected_net_profit=min_expected_net_profit,
+            label=f"{self.symbol}:{self.strategy_name}:sweep",
+        )
+        if not gate.all_pass:
+            return
+        self.pass_count += 1
+        self.expected_net_profit_sum += expected_net_profit
+
+
+@dataclass(frozen=True)
+class ThresholdGateResult:
+    """Pass/fail state for target, reward/cost, and expected-net gates."""
+
+    target_pass: bool
+    reward_cost_pass: bool
+    expected_net_pass: bool
+
+    @property
+    def all_pass(self) -> bool:
+        return self.target_pass and self.reward_cost_pass and self.expected_net_pass
+
 
 @dataclass
 class CalibrationResult:
@@ -109,7 +198,7 @@ class CalibrationResult:
 
 
 class HistoricalStrategyCalibrator:
-    """Fast strategy-edge calibration over historical candles."""
+    """Fast expected-only strategy-edge calibration over historical candles."""
 
     def __init__(
         self,
@@ -187,21 +276,31 @@ class HistoricalStrategyCalibrator:
                 continue
             stats.passing_core_filters += 1
 
-            target_pass = target_move_bps >= self.settings.risk.min_target_move_bps
-            if not target_pass:
-                self._record_sweeps(sweep_lookup, target_move_bps, reward_cost_ratio, expected_net_profit)
-                continue
-            stats.passing_target_move_bps += 1
-
-            reward_cost_pass = reward_cost_ratio >= self.settings.risk.min_reward_to_cost_ratio
-            if not reward_cost_pass:
-                self._record_sweeps(sweep_lookup, target_move_bps, reward_cost_ratio, expected_net_profit)
-                continue
-            stats.passing_reward_cost_ratio += 1
-
-            net_pass = expected_net_profit >= self.settings.risk.min_expected_net_profit_usd
-            if net_pass:
+            production_gate = evaluate_thresholds(
+                target_move_bps=target_move_bps,
+                reward_cost_ratio=reward_cost_ratio,
+                expected_net_profit=expected_net_profit,
+                min_target_move_bps=self.settings.risk.min_target_move_bps,
+                min_reward_cost_ratio=self.settings.risk.min_reward_to_cost_ratio,
+                min_expected_net_profit=self.settings.risk.min_expected_net_profit_usd,
+            )
+            validate_threshold_gate(
+                production_gate,
+                target_move_bps=target_move_bps,
+                reward_cost_ratio=reward_cost_ratio,
+                expected_net_profit=expected_net_profit,
+                min_target_move_bps=self.settings.risk.min_target_move_bps,
+                min_reward_cost_ratio=self.settings.risk.min_reward_to_cost_ratio,
+                min_expected_net_profit=self.settings.risk.min_expected_net_profit_usd,
+                label=f"{symbol}:{strategy.name}:production",
+            )
+            if production_gate.target_pass:
+                stats.passing_target_move_bps += 1
+            if production_gate.reward_cost_pass:
+                stats.passing_reward_cost_ratio += 1
+            if production_gate.expected_net_pass:
                 stats.passing_expected_net_profit += 1
+            if production_gate.all_pass:
                 stats.would_be_trades += 1
 
             self._record_sweeps(sweep_lookup, target_move_bps, reward_cost_ratio, expected_net_profit)
@@ -215,12 +314,13 @@ class HistoricalStrategyCalibrator:
         reward_cost_ratio: float,
         expected_net_profit: float,
     ) -> None:
-        if expected_net_profit < self.settings.risk.min_expected_net_profit_usd:
-            return
-        for (target_threshold, reward_threshold), sweep in sweep_lookup.items():
-            if target_move_bps >= target_threshold and reward_cost_ratio >= reward_threshold:
-                sweep.pass_count += 1
-                sweep.expected_net_profit_sum += expected_net_profit
+        for sweep in sweep_lookup.values():
+            sweep.record_if_passes(
+                target_move_bps=target_move_bps,
+                reward_cost_ratio=reward_cost_ratio,
+                expected_net_profit=expected_net_profit,
+                min_expected_net_profit=self.settings.risk.min_expected_net_profit_usd,
+            )
 
     def _core_filters_pass(self, metadata: dict[str, Any]) -> bool:
         return all(str(metadata.get(check, "not_checked")) == "pass" for check in CORE_CHECKS)
@@ -349,7 +449,13 @@ def find_symbol_csv(data_dir: Path, symbol: str, timeframe: str) -> Path | None:
 def print_report(result: CalibrationResult) -> None:
     print("Historical Strategy Edge Calibration")
     print("calibration only")
+    print("expected-only calibration")
     print("production thresholds unchanged")
+    print("candidate_target_move_bps is the strategy target estimate")
+    print("actual_historical_realized_move_bps=n/a (not calculated)")
+    print("expected_net_profit is estimated from candidate target and configured costs")
+    print("realized_net_profit=n/a (not calculated; no exit simulation in this calibration)")
+    print("averages are over all directional candidates, not only WouldTrade candidates")
     print(
         f"production_min_target_move_bps={result.production_target_move_bps:.2f} | "
         f"production_min_reward_cost_ratio={result.production_reward_cost_ratio:.2f}x | "
@@ -361,29 +467,29 @@ def print_report(result: CalibrationResult) -> None:
     print(
         f"{'Symbol':<10} {'Strategy':<18} {'Candles':>8} {'Signals':>8} "
         f"{'CoreOK':>8} {'TargetOK':>8} {'RewardOK':>8} {'NetOK':>8} "
-        f"{'Trades':>8} {'AvgTgt':>8} {'AvgR/C':>8} {'AvgNet':>10}"
+        f"{'WouldTrade':>10} {'AvgCandTgt':>10} {'AvgR/C':>8} {'AvgExpNet':>10}"
     )
     for row in result.rows:
         print(
             f"{row.symbol:<10} {row.strategy_name:<18} {row.candles_tested:>8} "
             f"{row.signals_considered:>8} {row.passing_core_filters:>8} "
             f"{row.passing_target_move_bps:>8} {row.passing_reward_cost_ratio:>8} "
-            f"{row.passing_expected_net_profit:>8} {row.would_be_trades:>8} "
-            f"{row.average_target_move_bps:>8.2f} {row.average_reward_cost_ratio:>8.2f} "
+            f"{row.passing_expected_net_profit:>8} {row.would_be_trades:>10} "
+            f"{row.average_target_move_bps:>10.2f} {row.average_reward_cost_ratio:>8.2f} "
             f"${row.average_expected_net_profit:>9.2f}"
         )
 
     print()
-    print("Threshold Sweep")
+    print("Threshold Sweep (expected-only; counts require core filters, target, reward/cost, and expected net)")
     print(
         f"{'Symbol':<10} {'Strategy':<18} {'Target':>8} {'R/C':>8} "
-        f"{'Trades':>8} {'AvgNet':>10} {'TotalNet':>10}"
+        f"{'WouldTrade':>10} {'AvgExpNet':>10} {'TotalExpNet':>12}"
     )
     for row in result.sweep_rows:
         print(
             f"{row.symbol:<10} {row.strategy_name:<18} {row.min_target_move_bps:>8.2f} "
-            f"{row.min_reward_cost_ratio:>8.2f} {row.pass_count:>8} "
-            f"${row.average_expected_net_profit:>9.2f} ${row.expected_net_profit_sum:>9.2f}"
+            f"{row.min_reward_cost_ratio:>8.2f} {row.pass_count:>10} "
+            f"${row.average_expected_net_profit:>9.2f} ${row.expected_net_profit_sum:>11.2f}"
         )
 
     print()
@@ -415,13 +521,73 @@ def best_threshold_lines(rows: list[SweepStats], key: str) -> list[str]:
         return ["none"]
     return [
         f"target={target:.2f}bps reward_cost={reward:.2f}x "
-        f"trades={int(values['count'])} expected_net=${values['net']:.2f}"
+        f"would_trade={int(values['count'])} expected_net=${values['net']:.2f}"
         for (target, reward), values in sorted_items[:5]
     ]
 
 
 def parse_float_list(raw: str) -> tuple[float, ...]:
     return tuple(float(item.strip()) for item in raw.split(",") if item.strip())
+
+
+def run_internal_self_test() -> None:
+    """Validate that threshold gates cannot pass below configured thresholds."""
+
+    failing_target = evaluate_thresholds(
+        target_move_bps=74.99,
+        reward_cost_ratio=3.5,
+        expected_net_profit=10.0,
+        min_target_move_bps=75.0,
+        min_reward_cost_ratio=3.0,
+        min_expected_net_profit=1.0,
+    )
+    assert not failing_target.target_pass
+    assert not failing_target.all_pass
+
+    failing_reward = evaluate_thresholds(
+        target_move_bps=80.0,
+        reward_cost_ratio=2.99,
+        expected_net_profit=10.0,
+        min_target_move_bps=75.0,
+        min_reward_cost_ratio=3.0,
+        min_expected_net_profit=1.0,
+    )
+    assert failing_reward.target_pass
+    assert not failing_reward.reward_cost_pass
+    assert not failing_reward.all_pass
+
+    failing_net = evaluate_thresholds(
+        target_move_bps=80.0,
+        reward_cost_ratio=3.1,
+        expected_net_profit=0.99,
+        min_target_move_bps=75.0,
+        min_reward_cost_ratio=3.0,
+        min_expected_net_profit=1.0,
+    )
+    assert failing_net.target_pass
+    assert failing_net.reward_cost_pass
+    assert not failing_net.expected_net_pass
+    assert not failing_net.all_pass
+
+    passing = evaluate_thresholds(
+        target_move_bps=75.0,
+        reward_cost_ratio=3.0,
+        expected_net_profit=1.0,
+        min_target_move_bps=75.0,
+        min_reward_cost_ratio=3.0,
+        min_expected_net_profit=1.0,
+    )
+    assert passing.all_pass
+    validate_threshold_gate(
+        passing,
+        target_move_bps=75.0,
+        reward_cost_ratio=3.0,
+        expected_net_profit=1.0,
+        min_target_move_bps=75.0,
+        min_reward_cost_ratio=3.0,
+        min_expected_net_profit=1.0,
+        label="self_test",
+    )
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
@@ -462,6 +628,11 @@ def build_arg_parser() -> argparse.ArgumentParser:
         type=float,
         help="Optional notional used only for calibration expected net profit.",
     )
+    parser.add_argument(
+        "--self-test",
+        action="store_true",
+        help="Run internal threshold-gate sanity checks and exit.",
+    )
     return parser
 
 
@@ -469,6 +640,10 @@ def main() -> None:
     settings = load_settings()
     parser = build_arg_parser()
     args = parser.parse_args()
+    if args.self_test:
+        run_internal_self_test()
+        print("calibration threshold self-test passed")
+        return
     symbols = tuple(symbol.strip() for symbol in args.symbols.split(",") if symbol.strip())
     historical = load_historical_inputs(
         symbols=symbols,
