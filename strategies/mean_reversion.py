@@ -33,6 +33,8 @@ class MeanReversionStrategy(BaseStrategy):
 
         zscore = (price - rolling_mean) / rolling_std
         rsi = float(df["rsi"].iloc[-1])
+        ema_fast = float(df["ema_fast"].iloc[-1])
+        ema_slow = float(df["ema_slow"].iloc[-1])
         atr = max(self.atr(df), price * 0.0007)
 
         if zscore <= -self.entry_z and rsi < 38:
@@ -41,6 +43,13 @@ class MeanReversionStrategy(BaseStrategy):
             side = Side.SELL
         else:
             return self.hold_signal(snapshot, "mean_reversion_not_confirmed")
+
+        ema_gap_bps = abs(ema_fast - ema_slow) / max(price, 1e-9) * 10_000
+        trend_side = Side.BUY if ema_fast >= ema_slow else Side.SELL
+        if side != trend_side and ema_gap_bps > 35:
+            return self.hold_signal(snapshot, "ema_trend_too_strong")
+        if not self.macd_reversal_confirms(df, side):
+            return self.hold_signal(snapshot, "macd_reversal_not_confirmed")
 
         stretch_score = min(abs(zscore) / 3.0, 1.0)
         rsi_score = min(abs(rsi - 50) / 35.0, 1.0)
@@ -57,7 +66,12 @@ class MeanReversionStrategy(BaseStrategy):
             stop_loss=stop_loss,
             take_profit=take_profit,
             confidence_hint=self.clamp_strength(0.52 + strength * 0.33),
-            metadata={"zscore": zscore, "rsi": rsi, "rolling_mean": rolling_mean},
+            metadata={
+                **self.indicator_metadata(df),
+                "zscore": zscore,
+                "rolling_mean": rolling_mean,
+                "ema_gap_bps": ema_gap_bps,
+            },
         )
 
     def score_market(self, snapshot: MarketSnapshot) -> float:

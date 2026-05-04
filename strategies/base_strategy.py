@@ -71,6 +71,58 @@ class BaseStrategy(ABC):
     def rsi(self, close: pd.Series) -> float:
         return float(DataPreprocessor.rsi(close).iloc[-1])
 
+    def latest_float(self, df: pd.DataFrame, column: str, default: float = 0.0) -> float:
+        if column not in df.columns or len(df) == 0:
+            return default
+        value = float(df[column].iloc[-1])
+        if np.isfinite(value):
+            return value
+        return default
+
+    def ema_trend_confirms(self, df: pd.DataFrame, side: Side, tolerance_bps: float = 2.0) -> bool:
+        if side == Side.HOLD or len(df) == 0:
+            return False
+        price = max(self.latest_float(df, "close", 0.0), 1e-9)
+        ema_fast = self.latest_float(df, "ema_fast", price)
+        ema_slow = self.latest_float(df, "ema_slow", price)
+        tolerance = price * tolerance_bps / 10_000
+        if side == Side.BUY:
+            return ema_fast >= ema_slow - tolerance
+        return ema_fast <= ema_slow + tolerance
+
+    def macd_confirms(self, df: pd.DataFrame, side: Side, tolerance_bps: float = 0.2) -> bool:
+        if side == Side.HOLD or len(df) == 0:
+            return False
+        price = max(self.latest_float(df, "close", 0.0), 1e-9)
+        tolerance = price * tolerance_bps / 10_000
+        macd = self.latest_float(df, "macd", 0.0)
+        macd_signal = self.latest_float(df, "macd_signal", 0.0)
+        macd_hist = self.latest_float(df, "macd_hist", macd - macd_signal)
+        if side == Side.BUY:
+            return macd >= macd_signal - tolerance and macd_hist >= -tolerance
+        return macd <= macd_signal + tolerance and macd_hist <= tolerance
+
+    def macd_reversal_confirms(self, df: pd.DataFrame, side: Side) -> bool:
+        if side == Side.HOLD or "macd_hist" not in df.columns or len(df) < 2:
+            return False
+        macd_hist = float(df["macd_hist"].iloc[-1])
+        previous_hist = float(df["macd_hist"].iloc[-2])
+        if not np.isfinite(macd_hist) or not np.isfinite(previous_hist):
+            return False
+        if side == Side.BUY:
+            return macd_hist >= previous_hist
+        return macd_hist <= previous_hist
+
+    def indicator_metadata(self, df: pd.DataFrame) -> dict[str, float]:
+        return {
+            "rsi": self.latest_float(df, "rsi", 50.0),
+            "ema_fast": self.latest_float(df, "ema_fast", 0.0),
+            "ema_slow": self.latest_float(df, "ema_slow", 0.0),
+            "macd": self.latest_float(df, "macd", 0.0),
+            "macd_signal": self.latest_float(df, "macd_signal", 0.0),
+            "macd_hist": self.latest_float(df, "macd_hist", 0.0),
+        }
+
     def clamp_strength(self, value: float) -> float:
         return float(np.clip(value, 0.0, 1.0))
 

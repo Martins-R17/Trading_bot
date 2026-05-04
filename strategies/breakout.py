@@ -30,6 +30,7 @@ class BreakoutStrategy(BaseStrategy):
         range_low = float(previous["low"].min())
         avg_volume = float(previous["volume"].mean())
         latest_volume = float(df["volume"].iloc[-1])
+        rsi = float(df["rsi"].iloc[-1])
         atr = max(self.atr(df), price * 0.0009)
 
         volume_confirmed = latest_volume > avg_volume * self.volume_multiplier
@@ -41,6 +42,15 @@ class BreakoutStrategy(BaseStrategy):
             breakout_distance = (range_low - price) / price
         else:
             return self.hold_signal(snapshot, "breakout_not_confirmed")
+
+        if not self.ema_trend_confirms(df, side, tolerance_bps=4.0):
+            return self.hold_signal(snapshot, "ema_trend_filter")
+        if not self.macd_confirms(df, side, tolerance_bps=0.5):
+            return self.hold_signal(snapshot, "macd_not_confirmed")
+        if side == Side.BUY and rsi > 82:
+            return self.hold_signal(snapshot, "rsi_overextended")
+        if side == Side.SELL and rsi < 18:
+            return self.hold_signal(snapshot, "rsi_overextended")
 
         volume_score = min(latest_volume / max(avg_volume * self.volume_multiplier, 1e-9), 2.0) / 2.0
         distance_score = min(breakout_distance / 0.003, 1.0)
@@ -57,7 +67,12 @@ class BreakoutStrategy(BaseStrategy):
             stop_loss=stop_loss,
             take_profit=take_profit,
             confidence_hint=self.clamp_strength(0.54 + strength * 0.36),
-            metadata={"range_high": range_high, "range_low": range_low, "volume_ratio": latest_volume / avg_volume},
+            metadata={
+                **self.indicator_metadata(df),
+                "range_high": range_high,
+                "range_low": range_low,
+                "volume_ratio": latest_volume / avg_volume,
+            },
         )
 
     def score_market(self, snapshot: MarketSnapshot) -> float:

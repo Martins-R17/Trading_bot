@@ -39,6 +39,10 @@ class MomentumStrategy(BaseStrategy):
 
         if side == Side.HOLD:
             return self.hold_signal(snapshot, "momentum_not_confirmed")
+        if not self.ema_trend_confirms(df, side):
+            return self.hold_signal(snapshot, "ema_trend_filter")
+        if not self.macd_confirms(df, side):
+            return self.hold_signal(snapshot, "macd_not_confirmed")
 
         trend_gap = abs(ema_fast - ema_slow) / price
         return_score = abs(short_return) / max(self.return_threshold * 3, 1e-9)
@@ -56,7 +60,7 @@ class MomentumStrategy(BaseStrategy):
             stop_loss=stop_loss,
             take_profit=take_profit,
             confidence_hint=self.clamp_strength(0.55 + strength * 0.35),
-            metadata={"ema_fast": ema_fast, "ema_slow": ema_slow, "return_5": short_return, "rsi": rsi},
+            metadata={**self.indicator_metadata(df), "return_5": short_return},
         )
 
     def score_market(self, snapshot: MarketSnapshot) -> float:

@@ -30,6 +30,9 @@ FEATURE_NAMES = [
     "depth_imbalance_signed",
     "sentiment_alignment",
     "volume_zscore",
+    "rsi",
+    "ema_trend_alignment",
+    "macd_alignment",
 ]
 
 
@@ -63,8 +66,22 @@ class ConfidenceModel:
         sentiment_alignment = snapshot.sentiment_score * signal.side.direction
         depth_imbalance_signed = book_features["depth_imbalance"] * signal.side.direction
         volume_zscore = 0.0
+        rsi = 50.0
+        ema_trend_alignment = 0.0
+        macd_alignment = 0.0
         if snapshot.ohlcv is not None and "volume_zscore" in snapshot.ohlcv.columns and len(snapshot.ohlcv) > 0:
             volume_zscore = float(snapshot.ohlcv["volume_zscore"].iloc[-1])
+        if snapshot.ohlcv is not None and len(snapshot.ohlcv) > 0:
+            df = snapshot.ohlcv
+            close = max(float(df["close"].iloc[-1]), 1e-9)
+            if "rsi" in df.columns:
+                rsi = float(df["rsi"].iloc[-1])
+            if "ema_fast" in df.columns and "ema_slow" in df.columns:
+                ema_gap_bps = (float(df["ema_fast"].iloc[-1]) - float(df["ema_slow"].iloc[-1])) / close * 10_000
+                ema_trend_alignment = ema_gap_bps * signal.side.direction
+            if "macd" in df.columns and "macd_signal" in df.columns:
+                macd_gap_bps = (float(df["macd"].iloc[-1]) - float(df["macd_signal"].iloc[-1])) / close * 10_000
+                macd_alignment = macd_gap_bps * signal.side.direction
         return {
             "signal_strength": float(signal.strength),
             "confidence_hint": float(signal.confidence_hint),
@@ -75,6 +92,9 @@ class ConfidenceModel:
             "depth_imbalance_signed": float(depth_imbalance_signed),
             "sentiment_alignment": float(sentiment_alignment),
             "volume_zscore": float(volume_zscore),
+            "rsi": float(rsi),
+            "ema_trend_alignment": float(ema_trend_alignment),
+            "macd_alignment": float(macd_alignment),
         }
 
     def predict(
@@ -111,6 +131,15 @@ class ConfidenceModel:
         volatility_penalty = max(feature_dict["volatility"] - 0.025, 0.0) * 4.0
         sentiment_bonus = max(feature_dict["sentiment_alignment"], 0.0) * 0.08
         micro_bonus = max(feature_dict["depth_imbalance_signed"], 0.0) * 0.08 if side != Side.HOLD else 0.0
+        trend_bonus = min(max(feature_dict["ema_trend_alignment"], 0.0) / 25.0, 1.0) * 0.06
+        macd_bonus = min(max(feature_dict["macd_alignment"], 0.0) / 6.0, 1.0) * 0.05
+        rsi = feature_dict["rsi"]
+        if side == Side.BUY:
+            rsi_penalty = max(rsi - 82.0, 0.0) / 100.0
+        elif side == Side.SELL:
+            rsi_penalty = max(18.0 - rsi, 0.0) / 100.0
+        else:
+            rsi_penalty = 0.0
         score = (
             0.34 * feature_dict["signal_strength"]
             + 0.2 * feature_dict["confidence_hint"]
@@ -118,7 +147,10 @@ class ConfidenceModel:
             + 0.16 * feature_dict["strategy_performance_score"]
             + sentiment_bonus
             + micro_bonus
+            + trend_bonus
+            + macd_bonus
             - spread_penalty
             - volatility_penalty
+            - rsi_penalty
         )
         return float(np.clip(0.35 + score, 0.0, 0.98))

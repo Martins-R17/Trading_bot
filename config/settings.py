@@ -72,6 +72,8 @@ class TradingSettings:
     ohlcv_limit: int = 200
     confidence_threshold: float = 0.8
     max_open_positions: int = 3
+    paper_max_holding_iterations: int = 20
+    trade_history_path: str = "data/trade_history.csv"
 
 
 @dataclass(frozen=True)
@@ -90,6 +92,9 @@ class RiskSettings:
     max_daily_loss: float = 0.03
     max_drawdown: float = 0.08
     max_position_notional_fraction: float = 0.25
+    min_position_notional: float = 10.0
+    min_reward_risk_ratio: float = 1.05
+    max_order_size_fraction_of_depth: float = 0.2
     min_leverage: float = 1.0
     max_leverage: float = 5.0
     abnormal_volatility: float = 0.06
@@ -147,6 +152,8 @@ def load_settings() -> Settings:
             ohlcv_limit=_env_int("OHLCV_LIMIT", 200),
             confidence_threshold=_env_float("CONFIDENCE_THRESHOLD", 0.8),
             max_open_positions=_env_int("MAX_OPEN_POSITIONS", 3),
+            paper_max_holding_iterations=_env_int("PAPER_MAX_HOLDING_ITERATIONS", 20),
+            trade_history_path=os.getenv("TRADE_HISTORY_PATH", "data/trade_history.csv"),
         ),
         market_data=MarketDataSettings(
             use_websocket=_env_bool("USE_WEBSOCKET", False),
@@ -161,6 +168,9 @@ def load_settings() -> Settings:
             max_daily_loss=_env_float("MAX_DAILY_LOSS", 0.03),
             max_drawdown=_env_float("MAX_DRAWDOWN", 0.08),
             max_position_notional_fraction=_env_float("MAX_POSITION_NOTIONAL_FRACTION", 0.25),
+            min_position_notional=_env_float("MIN_POSITION_NOTIONAL", 10.0),
+            min_reward_risk_ratio=_env_float("MIN_REWARD_RISK_RATIO", 1.05),
+            max_order_size_fraction_of_depth=_env_float("MAX_ORDER_SIZE_FRACTION_OF_DEPTH", 0.2),
             min_leverage=_env_float("MIN_LEVERAGE", 1.0),
             max_leverage=_env_float("MAX_LEVERAGE", 5.0),
             abnormal_volatility=_env_float("ABNORMAL_VOLATILITY", 0.06),

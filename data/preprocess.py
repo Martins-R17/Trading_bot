@@ -52,6 +52,11 @@ class DataPreprocessor:
         enriched["log_return"] = np.log(close / close.shift(1)).replace([np.inf, -np.inf], 0.0).fillna(0.0)
         enriched["ema_fast"] = close.ewm(span=8, adjust=False).mean()
         enriched["ema_slow"] = close.ewm(span=21, adjust=False).mean()
+        macd_fast = close.ewm(span=12, adjust=False).mean()
+        macd_slow = close.ewm(span=26, adjust=False).mean()
+        enriched["macd"] = macd_fast - macd_slow
+        enriched["macd_signal"] = enriched["macd"].ewm(span=9, adjust=False).mean()
+        enriched["macd_hist"] = enriched["macd"] - enriched["macd_signal"]
         enriched["rolling_volatility"] = enriched["log_return"].rolling(30).std().fillna(0.0)
         enriched["volume_zscore"] = DataPreprocessor._zscore(volume, window=30)
 

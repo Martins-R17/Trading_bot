@@ -38,10 +38,21 @@ class ScalpingMicrostructureStrategy(BaseStrategy):
         else:
             return self.hold_signal(snapshot, "imbalance_not_confirmed")
 
+        df = snapshot.ohlcv
+        rsi = float(df["rsi"].iloc[-1])
+        if not self.ema_trend_confirms(df, side, tolerance_bps=3.0):
+            return self.hold_signal(snapshot, "ema_trend_filter")
+        if not self.macd_confirms(df, side, tolerance_bps=0.5):
+            return self.hold_signal(snapshot, "macd_not_confirmed")
+        if side == Side.BUY and rsi > 80:
+            return self.hold_signal(snapshot, "rsi_overextended")
+        if side == Side.SELL and rsi < 20:
+            return self.hold_signal(snapshot, "rsi_overextended")
+
         spread = max(book.spread or entry * 0.0001, entry * 0.00003)
         strength = self.clamp_strength((abs(imbalance) - self.imbalance_threshold) / (1 - self.imbalance_threshold))
-        stop_distance = max(spread * 2.5, entry * 0.0008)
-        take_distance = max(spread * 3.5, entry * 0.0010)
+        stop_distance = max(spread * 2.5, entry * 0.0010)
+        take_distance = max(spread * 4.0, entry * 0.0016)
         stop_loss = entry - side.direction * stop_distance
         take_profit = entry + side.direction * take_distance
 
@@ -55,6 +66,7 @@ class ScalpingMicrostructureStrategy(BaseStrategy):
             take_profit=take_profit,
             confidence_hint=self.clamp_strength(0.58 + strength * 0.34),
             metadata={
+                **self.indicator_metadata(df),
                 "imbalance": imbalance,
                 "spread_bps": book.spread_bps,
                 "depth_quote": book.total_depth_quote(levels=5),

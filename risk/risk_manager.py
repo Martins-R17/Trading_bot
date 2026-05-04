@@ -17,6 +17,8 @@ class RiskState:
     peak_equity: float
     daily_pnl: float = 0.0
     current_day: int = 0
+    realized_pnl: float = 0.0
+    closed_trade_count: int = 0
 
 
 class RiskManager:
@@ -56,10 +58,21 @@ class RiskManager:
             return self._reject(signal, abnormal_reason)
 
         entry = signal.entry_price or snapshot.close
+        if not np.isfinite(entry) or entry <= 0:
+            return self._reject(signal, "invalid_entry_price")
+
         stop_loss, take_profit = self._ensure_exits(signal, entry)
+        exit_reason = self._exit_validation_reason(signal.side, entry, stop_loss, take_profit)
+        if exit_reason:
+            return self._reject(signal, exit_reason)
+
         risk_per_unit = abs(entry - stop_loss)
+        reward_per_unit = abs(take_profit - entry)
         if risk_per_unit <= 0:
             return self._reject(signal, "invalid_stop_distance")
+        reward_risk_ratio = reward_per_unit / risk_per_unit
+        if reward_risk_ratio < self.settings.min_reward_risk_ratio:
+            return self._reject(signal, "reward_risk_too_low")
 
         sentiment_multiplier = self._sentiment_risk_multiplier(signal.side, snapshot.sentiment_score)
         confidence_multiplier = float(np.clip(confidence, 0.2, 1.0))
@@ -72,6 +85,17 @@ class RiskManager:
         notional = amount * entry
         if amount <= 0 or notional <= 0:
             return self._reject(signal, "position_size_zero")
+        if notional < self.settings.min_position_notional:
+            return self._reject(signal, "notional_below_minimum")
+
+        liquidity_reason = self._liquidity_capacity_reason(snapshot, notional)
+        if liquidity_reason:
+            return self._reject(signal, liquidity_reason)
+
+        round_trip_cost = notional * (self.settings.fee_bps * 2 + self.settings.slippage_bps * 2) / 10_000
+        expected_reward = reward_per_unit * amount
+        if expected_reward <= round_trip_cost:
+            return self._reject(signal, "expected_reward_below_costs")
 
         return RiskDecision(
             approved=True,
@@ -90,6 +114,8 @@ class RiskManager:
             metadata={
                 **signal.metadata,
                 "risk_capital": risk_capital,
+                "reward_risk_ratio": reward_risk_ratio,
+                "estimated_round_trip_cost": round_trip_cost,
                 "sentiment_multiplier": sentiment_multiplier,
             },
         )
@@ -111,8 +137,12 @@ class RiskManager:
         if snapshot.volatility >= self.settings.abnormal_volatility:
             return "abnormal_volatility"
         book = snapshot.order_book
-        if book is not None and book.spread_bps > self.settings.max_spread_bps:
-            return "spread_too_wide"
+        if book is not None:
+            if book.best_bid is not None and book.best_ask is not None:
+                if book.best_bid <= 0 or book.best_ask <= 0 or book.best_bid >= book.best_ask:
+                    return "invalid_order_book"
+            if book.spread_bps > self.settings.max_spread_bps:
+                return "spread_too_wide"
         if snapshot.close <= 0:
             return "invalid_price"
         return ""
@@ -121,6 +151,8 @@ class RiskManager:
         self._reset_daily_if_needed()
         self.state.equity += realized_pnl
         self.state.daily_pnl += realized_pnl
+        self.state.realized_pnl += realized_pnl
+        self.state.closed_trade_count += 1
         self.state.peak_equity = max(self.state.peak_equity, self.state.equity)
 
     def daily_loss_limit_reached(self) -> bool:
@@ -141,6 +173,42 @@ class RiskManager:
         if take_profit is None:
             take_profit = entry * (1 + signal.side.direction * self.settings.take_profit_bps / 10_000)
         return float(stop_loss), float(take_profit)
+
+    def _exit_validation_reason(
+        self,
+        side: Side,
+        entry: float,
+        stop_loss: float,
+        take_profit: float,
+    ) -> str:
+        values = (entry, stop_loss, take_profit)
+        if any(not np.isfinite(value) or value <= 0 for value in values):
+            return "invalid_exit_price"
+        if side == Side.BUY:
+            if stop_loss >= entry:
+                return "buy_stop_not_below_entry"
+            if take_profit <= entry:
+                return "buy_take_not_above_entry"
+        elif side == Side.SELL:
+            if stop_loss <= entry:
+                return "sell_stop_not_above_entry"
+            if take_profit >= entry:
+                return "sell_take_not_below_entry"
+        else:
+            return "hold_signal"
+        return ""
+
+    def _liquidity_capacity_reason(self, snapshot: MarketSnapshot, notional: float) -> str:
+        book = snapshot.order_book
+        if book is None:
+            return ""
+        depth_quote = book.total_depth_quote(levels=5)
+        if depth_quote <= 0:
+            return "missing_liquidity"
+        max_order_notional = depth_quote * self.settings.max_order_size_fraction_of_depth
+        if notional > max_order_notional:
+            return "order_too_large_for_depth"
+        return ""
 
     def _sentiment_risk_multiplier(self, side: Side, sentiment_score: float) -> float:
         aligned = side.direction * sentiment_score
