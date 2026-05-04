@@ -1,0 +1,2 @@
+"""Optional FastAPI monitoring API."""
+
