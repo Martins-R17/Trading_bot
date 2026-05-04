@@ -49,7 +49,7 @@ class TradeExecutor:
             fill_price = reference_price + slippage
         else:
             fill_price = reference_price - slippage
-        fee = abs(fill_price * request.amount) * self.settings.risk.fee_bps / 10_000
+        fee = abs(fill_price * request.amount) * self.settings.risk.taker_fee_rate
         return OrderResult(
             request=request,
             success=True,

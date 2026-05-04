@@ -32,6 +32,16 @@ def _env_float(name: str, default: float) -> float:
     return default if raw is None or raw == "" else float(raw)
 
 
+def _env_fee_rate(name: str, legacy_bps_name: str, default: float) -> float:
+    raw = os.getenv(name)
+    if raw is not None and raw != "":
+        return float(raw)
+    legacy_bps = os.getenv(legacy_bps_name)
+    if legacy_bps is not None and legacy_bps != "":
+        return float(legacy_bps) / 10_000
+    return default
+
+
 def _env_int(name: str, default: int) -> int:
     raw = os.getenv(name)
     return default if raw is None or raw == "" else int(raw)
@@ -67,6 +77,7 @@ class ExchangeSettings:
 class TradingSettings:
     paper_trade: bool = True
     enable_live_trading: bool = False
+    enable_scalping_microstructure: bool = False
     symbols: tuple[str, ...] = ("BTC/USDT", "ETH/USDT")
     timeframe: str = "1m"
     ohlcv_limit: int = 200
@@ -100,6 +111,9 @@ class RiskSettings:
     min_reward_risk_ratio: float = 1.05
     min_reward_cost_multiple: float = 2.0
     min_expected_net_profit: float = 1.0
+    scalping_min_net_cost_multiple: float = 3.0
+    scalping_min_expected_net_profit: float = 5.0
+    scalping_target_cost_buffer: float = 1.5
     max_order_size_fraction_of_depth: float = 0.2
     min_leverage: float = 1.0
     max_leverage: float = 5.0
@@ -107,9 +121,23 @@ class RiskSettings:
     max_spread_bps: float = 15.0
     stop_loss_bps: float = 12.0
     take_profit_bps: float = 18.0
-    fee_bps: float = 4.0
+    maker_fee_rate: float = 0.001
+    taker_fee_rate: float = 0.001
+    fee_bps: float = 10.0
     slippage_bps: float = 2.0
     sentiment_risk_multiplier: float = 0.25
+
+    @property
+    def slippage_rate(self) -> float:
+        return self.slippage_bps / 10_000
+
+    @property
+    def round_trip_taker_cost_rate(self) -> float:
+        return 2 * self.taker_fee_rate + 2 * self.slippage_rate
+
+    @property
+    def round_trip_taker_cost_bps(self) -> float:
+        return self.round_trip_taker_cost_rate * 10_000
 
 
 @dataclass(frozen=True)
@@ -134,6 +162,8 @@ def load_settings() -> Settings:
     """Load all settings from environment variables and optional .env."""
 
     _load_env_file()
+    maker_fee_rate = _env_fee_rate("MAKER_FEE_RATE", "FEE_BPS", 0.001)
+    taker_fee_rate = _env_fee_rate("TAKER_FEE_RATE", "FEE_BPS", 0.001)
     return Settings(
         app=AppSettings(
             log_level=os.getenv("LOG_LEVEL", "INFO"),
@@ -153,6 +183,7 @@ def load_settings() -> Settings:
         trading=TradingSettings(
             paper_trade=_env_bool("PAPER_TRADE", True),
             enable_live_trading=_env_bool("ENABLE_LIVE_TRADING", False),
+            enable_scalping_microstructure=_env_bool("ENABLE_SCALPING_MICROSTRUCTURE", False),
             symbols=_env_tuple("SYMBOLS", ("BTC/USDT", "ETH/USDT")),
             timeframe=os.getenv("TIMEFRAME", "1m"),
             ohlcv_limit=_env_int("OHLCV_LIMIT", 200),
@@ -182,6 +213,9 @@ def load_settings() -> Settings:
             min_reward_risk_ratio=_env_float("MIN_REWARD_RISK_RATIO", 1.05),
             min_reward_cost_multiple=_env_float("MIN_REWARD_COST_MULTIPLE", 2.0),
             min_expected_net_profit=_env_float("MIN_EXPECTED_NET_PROFIT", 1.0),
+            scalping_min_net_cost_multiple=_env_float("SCALPING_MIN_NET_COST_MULTIPLE", 3.0),
+            scalping_min_expected_net_profit=_env_float("SCALPING_MIN_EXPECTED_NET_PROFIT", 5.0),
+            scalping_target_cost_buffer=_env_float("SCALPING_TARGET_COST_BUFFER", 1.5),
             max_order_size_fraction_of_depth=_env_float("MAX_ORDER_SIZE_FRACTION_OF_DEPTH", 0.2),
             min_leverage=_env_float("MIN_LEVERAGE", 1.0),
             max_leverage=_env_float("MAX_LEVERAGE", 5.0),
@@ -189,7 +223,9 @@ def load_settings() -> Settings:
             max_spread_bps=_env_float("MAX_SPREAD_BPS", 15.0),
             stop_loss_bps=_env_float("STOP_LOSS_BPS", 12.0),
             take_profit_bps=_env_float("TAKE_PROFIT_BPS", 18.0),
-            fee_bps=_env_float("FEE_BPS", 4.0),
+            maker_fee_rate=maker_fee_rate,
+            taker_fee_rate=taker_fee_rate,
+            fee_bps=_env_float("FEE_BPS", taker_fee_rate * 10_000),
             slippage_bps=_env_float("SLIPPAGE_BPS", 2.0),
             sentiment_risk_multiplier=_env_float("SENTIMENT_RISK_MULTIPLIER", 0.25),
         ),

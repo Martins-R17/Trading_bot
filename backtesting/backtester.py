@@ -92,7 +92,7 @@ class Backtester:
                             strategy_name=decision.strategy_name,
                             confidence=decision.confidence,
                             leverage=decision.leverage,
-                            fees_paid=decision.notional * self.risk_settings.fee_bps / 10_000,
+                            fees_paid=decision.notional * self.risk_settings.taker_fee_rate,
                         )
 
             mark_equity = risk.state.equity
@@ -121,7 +121,7 @@ class Backtester:
             adjusted_exit = exit_price * (1 + self.risk_settings.slippage_bps / 10_000)
         gross_pnl = (exit_price - position.entry_price) * position.amount * position.side.direction
         exit_slippage_cost = abs(adjusted_exit - exit_price) * position.amount
-        exit_fee = abs(adjusted_exit * position.amount) * self.risk_settings.fee_bps / 10_000
+        exit_fee = abs(adjusted_exit * position.amount) * self.risk_settings.taker_fee_rate
         total_fees = position.fees_paid + exit_fee
         total_costs = total_fees + exit_slippage_cost
         return TradeRecord(

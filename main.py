@@ -43,8 +43,11 @@ class TradingBot:
             MomentumStrategy(),
             MeanReversionStrategy(),
             BreakoutStrategy(),
-            ScalpingMicrostructureStrategy(max_spread_bps=settings.risk.max_spread_bps),
         ]
+        if settings.trading.enable_scalping_microstructure:
+            self.strategies.append(
+                ScalpingMicrostructureStrategy(max_spread_bps=settings.risk.max_spread_bps)
+            )
 
         self.confidence_model = ConfidenceModel()
         self.selector = StrategySelector(
@@ -83,6 +86,7 @@ class TradingBot:
             else:
                 await self._run_polling_loop()
         finally:
+            self._print_final_summary()
             await self.close()
 
     async def _run_polling_loop(self) -> None:
@@ -139,10 +143,27 @@ class TradingBot:
         print("-" * 96)
 
         self._print_market_dashboard()
+        self._print_assumptions_dashboard()
         self._print_signal_dashboard()
         self._print_position_dashboard(mark_prices, unrealized_by_symbol)
         self._print_trade_dashboard()
         print("=" * 96)
+
+    def _print_assumptions_dashboard(self) -> None:
+        risk = self.settings.risk
+        scalping_status = (
+            "scalping_microstructure enabled"
+            if self.settings.trading.enable_scalping_microstructure
+            else "scalping_microstructure disabled"
+        )
+        print("Assumptions")
+        print(
+            f"maker_fee={risk.maker_fee_rate:.4%} | "
+            f"taker_fee={risk.taker_fee_rate:.4%} | "
+            f"slippage={risk.slippage_bps:.2f}bps/side | "
+            f"est_round_trip_taker={risk.round_trip_taker_cost_bps:.2f}bps | "
+            f"{scalping_status}"
+        )
 
     def _print_market_dashboard(self) -> None:
         if not self.last_snapshots:
@@ -228,6 +249,40 @@ class TradingBot:
                 f"net={self._signed_money(trade.realized_pnl)} "
                 f"reason={trade.reason} strategy={trade.strategy_name}"
             )
+
+    def _print_final_summary(self) -> None:
+        trades = self.order_manager.closed_trades
+        closed_count = len(trades)
+        wins = sum(1 for trade in trades if trade.realized_pnl > 0)
+        win_rate = wins / closed_count * 100 if closed_count else 0.0
+        gross_total = sum(trade.gross_pnl for trade in trades)
+        costs_total = sum(trade.total_costs for trade in trades)
+        net_total = sum(trade.realized_pnl for trade in trades)
+        best_strategy, worst_strategy = self._best_worst_strategy()
+
+        print()
+        print("=" * 96)
+        print("Final Trade Summary")
+        print(
+            f"closed={closed_count} | gross={self._signed_money(gross_total)} | "
+            f"costs={self._money(costs_total)} | net={self._signed_money(net_total)} | "
+            f"win_rate={win_rate:.1f}%"
+        )
+        print(f"best_strategy={best_strategy} | worst_strategy={worst_strategy}")
+        print("=" * 96)
+
+    def _best_worst_strategy(self) -> tuple[str, str]:
+        totals: dict[str, float] = {}
+        for trade in self.order_manager.closed_trades:
+            totals[trade.strategy_name] = totals.get(trade.strategy_name, 0.0) + trade.realized_pnl
+        if not totals:
+            return "none", "none"
+        best = max(totals.items(), key=lambda item: item[1])
+        worst = min(totals.items(), key=lambda item: item[1])
+        return (
+            f"{best[0]} {self._signed_money(best[1])}",
+            f"{worst[0]} {self._signed_money(worst[1])}",
+        )
 
     def _mark_prices(self) -> dict[str, float]:
         return {

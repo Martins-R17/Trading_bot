@@ -124,7 +124,7 @@ class OrderManager:
         adjusted_exit = self._apply_exit_slippage(position.side, mark_price)
         gross_pnl = (mark_price - reference_entry) * position.amount * position.side.direction
         exit_slippage_cost = abs(adjusted_exit - mark_price) * position.amount
-        exit_fee = abs(adjusted_exit * position.amount) * self.risk_settings.fee_bps / 10_000
+        exit_fee = abs(adjusted_exit * position.amount) * self.risk_settings.taker_fee_rate
         fees = position.fees_paid + exit_fee
         slippage_costs = entry_slippage_cost + exit_slippage_cost
         total_costs = fees + slippage_costs

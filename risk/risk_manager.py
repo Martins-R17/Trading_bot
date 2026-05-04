@@ -92,7 +92,7 @@ class RiskManager:
         if liquidity_reason:
             return self._reject(signal, liquidity_reason)
 
-        round_trip_cost = notional * (self.settings.fee_bps * 2 + self.settings.slippage_bps * 2) / 10_000
+        round_trip_cost = notional * self.settings.round_trip_taker_cost_rate
         expected_gross_reward = reward_per_unit * amount
         required_reward = round_trip_cost * self.settings.min_reward_cost_multiple
         expected_net_profit = expected_gross_reward - round_trip_cost
@@ -100,6 +100,17 @@ class RiskManager:
             return self._reject(signal, "expected_reward_below_costs")
         if expected_net_profit < self.settings.min_expected_net_profit:
             return self._reject(signal, "expected_net_profit_too_low")
+
+        if signal.strategy_name == "scalping_microstructure":
+            scalping_reason = self._scalping_profitability_reason(
+                snapshot,
+                entry,
+                reward_per_unit,
+                expected_net_profit,
+                round_trip_cost,
+            )
+            if scalping_reason:
+                return self._reject(signal, scalping_reason)
 
         return RiskDecision(
             approved=True,
@@ -123,6 +134,7 @@ class RiskManager:
                 "expected_net_profit": expected_net_profit,
                 "required_reward": required_reward,
                 "estimated_round_trip_cost": round_trip_cost,
+                "estimated_round_trip_cost_rate": self.settings.round_trip_taker_cost_rate,
                 "sentiment_multiplier": sentiment_multiplier,
             },
         )
@@ -215,6 +227,34 @@ class RiskManager:
         max_order_notional = depth_quote * self.settings.max_order_size_fraction_of_depth
         if notional > max_order_notional:
             return "order_too_large_for_depth"
+        return ""
+
+    def _scalping_profitability_reason(
+        self,
+        snapshot: MarketSnapshot,
+        entry: float,
+        reward_per_unit: float,
+        expected_net_profit: float,
+        round_trip_cost: float,
+    ) -> str:
+        if expected_net_profit < round_trip_cost * self.settings.scalping_min_net_cost_multiple:
+            return "scalping_net_tp_below_3x_costs"
+
+        if expected_net_profit < self.settings.scalping_min_expected_net_profit:
+            return "scalping_projected_net_profit_too_small"
+
+        spread_rate = 0.0
+        if snapshot.order_book is not None:
+            spread_rate = max(snapshot.order_book.spread_bps, 0.0) / 10_000
+        per_unit_cost_barrier = entry * (
+            spread_rate
+            + 2 * self.settings.slippage_rate
+            + 2 * self.settings.taker_fee_rate
+        )
+        required_move = per_unit_cost_barrier * self.settings.scalping_target_cost_buffer
+        if reward_per_unit < required_move:
+            return "scalping_target_move_too_small_after_costs"
+
         return ""
 
     def _sentiment_risk_multiplier(self, side: Side, sentiment_score: float) -> float:
