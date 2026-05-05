@@ -8,7 +8,7 @@ fee-aware candidates under production thresholds and under calibration sweeps.
 from __future__ import annotations
 
 import argparse
-from collections import defaultdict
+from collections import Counter, defaultdict
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -16,7 +16,7 @@ from typing import Any
 import pandas as pd
 
 from config.settings import Settings, load_settings
-from core.models import MarketSnapshot, Side
+from core.models import MarketSnapshot, Side, StrategySignal
 from data.preprocess import DataPreprocessor
 from strategies import (
     BreakoutStrategy,
@@ -172,6 +172,61 @@ class SweepStats:
         self.expected_net_profit_sum += expected_net_profit
 
 
+@dataclass
+class SimulationTrade:
+    """Realized historical exit result for one production-approved candidate."""
+
+    symbol: str
+    strategy_name: str
+    entry_index: int
+    entry_timestamp: float
+    entry_price: float
+    side: Side
+    stop_loss: float
+    take_profit: float
+    exit_timestamp: float
+    exit_price: float
+    exit_reason: str
+    hold_candles: int
+    future_high: float
+    future_low: float
+    future_high_low_path: list[dict[str, float]]
+    realized_gross_pnl: float
+    fees: float
+    slippage_costs: float
+    total_costs: float
+    realized_net_pnl: float
+
+
+@dataclass
+class SimulationSummary:
+    """Aggregated realized simulation stats for one symbol/strategy pair."""
+
+    symbol: str
+    strategy_name: str
+    trades: int = 0
+    wins: int = 0
+    losses: int = 0
+    gross_pnl: float = 0.0
+    costs: float = 0.0
+    net_pnl: float = 0.0
+    best_trade: SimulationTrade | None = None
+    worst_trade: SimulationTrade | None = None
+    exit_reason_counts: dict[str, int] = field(default_factory=dict)
+
+    @property
+    def win_rate(self) -> float:
+        if self.trades <= 0:
+            return 0.0
+        return self.wins / self.trades * 100
+
+    @property
+    def average_net_per_trade(self) -> float:
+        if self.trades <= 0:
+            return 0.0
+        return self.net_pnl / self.trades
+
+
 @dataclass(frozen=True)
 class ThresholdGateResult:
     """Pass/fail state for target, reward/cost, and expected-net gates."""
@@ -193,12 +248,15 @@ class CalibrationResult:
     production_reward_cost_ratio: float
     production_min_expected_net_profit: float
     diagnostic_notional: float
+    max_hold_candles: int = 60
     rows: list[StrategyCalibrationStats] = field(default_factory=list)
     sweep_rows: list[SweepStats] = field(default_factory=list)
+    simulation_rows: list[SimulationSummary] = field(default_factory=list)
+    simulation_trades: list[SimulationTrade] = field(default_factory=list)
 
 
 class HistoricalStrategyCalibrator:
-    """Fast expected-only strategy-edge calibration over historical candles."""
+    """Fast strategy-edge calibration over historical candles."""
 
     def __init__(
         self,
@@ -206,30 +264,37 @@ class HistoricalStrategyCalibrator:
         target_sweep: tuple[float, ...] = DEFAULT_TARGET_SWEEP,
         reward_cost_sweep: tuple[float, ...] = DEFAULT_REWARD_COST_SWEEP,
         diagnostic_notional: float | None = None,
+        max_hold_candles: int = 60,
     ) -> None:
         self.settings = settings
         self.target_sweep = target_sweep
         self.reward_cost_sweep = reward_cost_sweep
         self.diagnostic_notional = diagnostic_notional or self._default_diagnostic_notional()
+        self.max_hold_candles = max(1, int(max_hold_candles))
 
     def run(self, historical_by_symbol: dict[str, pd.DataFrame]) -> CalibrationResult:
         rows: list[StrategyCalibrationStats] = []
         sweep_rows: list[SweepStats] = []
+        simulation_trades: list[SimulationTrade] = []
 
         for symbol, raw_df in historical_by_symbol.items():
             df = DataPreprocessor.add_features(DataPreprocessor.normalize_ohlcv(raw_df))
             for strategy in self._build_strategies():
-                stats, sweeps = self._calibrate_strategy(symbol, df, strategy)
+                stats, sweeps, trades = self._calibrate_strategy(symbol, df, strategy)
                 rows.append(stats)
                 sweep_rows.extend(sweeps)
+                simulation_trades.extend(trades)
 
         return CalibrationResult(
             production_target_move_bps=self.settings.risk.min_target_move_bps,
             production_reward_cost_ratio=self.settings.risk.min_reward_to_cost_ratio,
             production_min_expected_net_profit=self.settings.risk.min_expected_net_profit_usd,
             diagnostic_notional=self.diagnostic_notional,
+            max_hold_candles=self.max_hold_candles,
             rows=rows,
             sweep_rows=sweep_rows,
+            simulation_rows=self._summarize_simulation_trades(simulation_trades),
+            simulation_trades=simulation_trades,
         )
 
     def _calibrate_strategy(
@@ -237,8 +302,9 @@ class HistoricalStrategyCalibrator:
         symbol: str,
         df: pd.DataFrame,
         strategy: BaseStrategy,
-    ) -> tuple[StrategyCalibrationStats, list[SweepStats]]:
+    ) -> tuple[StrategyCalibrationStats, list[SweepStats], list[SimulationTrade]]:
         stats = StrategyCalibrationStats(symbol=symbol, strategy_name=strategy.name)
+        simulation_trades: list[SimulationTrade] = []
         sweep_lookup = {
             (target, reward): SweepStats(
                 symbol=symbol,
@@ -300,12 +366,176 @@ class HistoricalStrategyCalibrator:
                 stats.passing_reward_cost_ratio += 1
             if production_gate.expected_net_pass:
                 stats.passing_expected_net_profit += 1
-            if production_gate.all_pass:
+            if production_gate.all_pass and self._is_simulatable_signal(signal):
                 stats.would_be_trades += 1
+                simulation_trades.append(
+                    self._simulate_exit(
+                        symbol=symbol,
+                        strategy_name=strategy.name,
+                        df=df,
+                        entry_index=index,
+                        signal=signal,
+                    )
+                )
 
             self._record_sweeps(sweep_lookup, target_move_bps, reward_cost_ratio, expected_net_profit)
 
-        return stats, list(sweep_lookup.values())
+        return stats, list(sweep_lookup.values()), simulation_trades
+
+    def _is_simulatable_signal(self, signal: StrategySignal) -> bool:
+        if not signal.is_actionable or signal.side not in {Side.BUY, Side.SELL}:
+            return False
+        entry = self._finite_number(signal.entry_price)
+        stop_loss = self._finite_number(signal.stop_loss)
+        take_profit = self._finite_number(signal.take_profit)
+        if min(entry, stop_loss, take_profit) <= 0:
+            return False
+        if signal.side == Side.BUY:
+            return stop_loss < entry < take_profit
+        return take_profit < entry < stop_loss
+
+    def _simulate_exit(
+        self,
+        symbol: str,
+        strategy_name: str,
+        df: pd.DataFrame,
+        entry_index: int,
+        signal: StrategySignal,
+    ) -> SimulationTrade:
+        entry_price = self._finite_number(signal.entry_price)
+        stop_loss = self._finite_number(signal.stop_loss)
+        take_profit = self._finite_number(signal.take_profit)
+        entry_timestamp = self._finite_number(df["timestamp"].iloc[entry_index])
+        horizon_end = min(len(df), entry_index + 1 + self.max_hold_candles)
+        future = df.iloc[entry_index + 1 : horizon_end]
+
+        exit_price = entry_price
+        exit_timestamp = entry_timestamp
+        exit_reason = "max_horizon_exit"
+        hold_candles = 0
+        future_high = entry_price
+        future_low = entry_price
+        future_high_low_path: list[dict[str, float]] = []
+
+        if len(future) > 0:
+            future_high = self._finite_number(future["high"].max(), entry_price)
+            future_low = self._finite_number(future["low"].min(), entry_price)
+            last_row = future.iloc[-1]
+            exit_price = self._finite_number(last_row["close"], entry_price)
+            exit_timestamp = self._finite_number(last_row["timestamp"], entry_timestamp)
+            hold_candles = len(future)
+            future_high_low_path = [
+                {
+                    "timestamp": self._finite_number(getattr(row, "timestamp"), entry_timestamp),
+                    "high": self._finite_number(getattr(row, "high"), entry_price),
+                    "low": self._finite_number(getattr(row, "low"), entry_price),
+                }
+                for row in future.itertuples(index=False)
+            ]
+
+            for offset, candle in enumerate(future_high_low_path, start=1):
+                high = candle["high"]
+                low = candle["low"]
+                timestamp = candle["timestamp"]
+
+                if signal.side == Side.BUY:
+                    stop_hit = low <= stop_loss
+                    target_hit = high >= take_profit
+                else:
+                    stop_hit = high >= stop_loss
+                    target_hit = low <= take_profit
+
+                if stop_hit:
+                    exit_price = stop_loss
+                    exit_reason = "stop_loss_hit"
+                elif target_hit:
+                    exit_price = take_profit
+                    exit_reason = "take_profit_hit"
+                else:
+                    continue
+
+                exit_timestamp = timestamp
+                hold_candles = offset
+                break
+
+        gross_pnl, fees, slippage_costs, total_costs, net_pnl = self._realized_pnl_components(
+            side=signal.side,
+            entry_price=entry_price,
+            exit_price=exit_price,
+        )
+        return SimulationTrade(
+            symbol=symbol,
+            strategy_name=strategy_name,
+            entry_index=entry_index,
+            entry_timestamp=entry_timestamp,
+            entry_price=entry_price,
+            side=signal.side,
+            stop_loss=stop_loss,
+            take_profit=take_profit,
+            exit_timestamp=exit_timestamp,
+            exit_price=exit_price,
+            exit_reason=exit_reason,
+            hold_candles=hold_candles,
+            future_high=future_high,
+            future_low=future_low,
+            future_high_low_path=future_high_low_path,
+            realized_gross_pnl=gross_pnl,
+            fees=fees,
+            slippage_costs=slippage_costs,
+            total_costs=total_costs,
+            realized_net_pnl=net_pnl,
+        )
+
+    def _realized_pnl_components(
+        self,
+        side: Side,
+        entry_price: float,
+        exit_price: float,
+    ) -> tuple[float, float, float, float, float]:
+        amount = self.diagnostic_notional / max(entry_price, 1e-9)
+        gross_pnl = (exit_price - entry_price) * amount * side.direction
+        entry_notional = abs(entry_price * amount)
+        exit_notional = abs(exit_price * amount)
+        fees = (entry_notional + exit_notional) * self.settings.risk.taker_fee_rate
+        slippage_costs = (entry_notional + exit_notional) * self.settings.risk.slippage_rate
+        total_costs = fees + slippage_costs
+        return (
+            float(gross_pnl),
+            float(fees),
+            float(slippage_costs),
+            float(total_costs),
+            float(gross_pnl - total_costs),
+        )
+
+    def _summarize_simulation_trades(
+        self,
+        trades: list[SimulationTrade],
+    ) -> list[SimulationSummary]:
+        grouped: dict[tuple[str, str], list[SimulationTrade]] = defaultdict(list)
+        for trade in trades:
+            grouped[(trade.symbol, trade.strategy_name)].append(trade)
+
+        summaries: list[SimulationSummary] = []
+        for (symbol, strategy_name), items in grouped.items():
+            best_trade = max(items, key=lambda trade: trade.realized_net_pnl)
+            worst_trade = min(items, key=lambda trade: trade.realized_net_pnl)
+            exit_counts = Counter(trade.exit_reason for trade in items)
+            summaries.append(
+                SimulationSummary(
+                    symbol=symbol,
+                    strategy_name=strategy_name,
+                    trades=len(items),
+                    wins=sum(1 for trade in items if trade.realized_net_pnl > 0),
+                    losses=sum(1 for trade in items if trade.realized_net_pnl <= 0),
+                    gross_pnl=sum(trade.realized_gross_pnl for trade in items),
+                    costs=sum(trade.total_costs for trade in items),
+                    net_pnl=sum(trade.realized_net_pnl for trade in items),
+                    best_trade=best_trade,
+                    worst_trade=worst_trade,
+                    exit_reason_counts=dict(exit_counts),
+                )
+            )
+        return sorted(summaries, key=lambda row: (row.symbol, row.strategy_name))
 
     def _record_sweeps(
         self,
@@ -449,12 +679,11 @@ def find_symbol_csv(data_dir: Path, symbol: str, timeframe: str) -> Path | None:
 def print_report(result: CalibrationResult) -> None:
     print("Historical Strategy Edge Calibration")
     print("calibration only")
-    print("expected-only calibration")
     print("production thresholds unchanged")
     print("candidate_target_move_bps is the strategy target estimate")
-    print("actual_historical_realized_move_bps=n/a (not calculated)")
-    print("expected_net_profit is estimated from candidate target and configured costs")
-    print("realized_net_profit=n/a (not calculated; no exit simulation in this calibration)")
+    print("expected-only section estimates profit from candidate target and configured costs")
+    print("realized simulation section walks future candle high/low paths after WouldTrade candidates")
+    print("same-candle stop/target ambiguity is resolved conservatively as stop_loss_hit")
     print("averages are over all directional candidates, not only WouldTrade candidates")
     print(
         f"production_min_target_move_bps={result.production_target_move_bps:.2f} | "
@@ -463,7 +692,7 @@ def print_report(result: CalibrationResult) -> None:
         f"diagnostic_notional=${result.diagnostic_notional:,.2f}"
     )
     print()
-    print("Per Strategy And Symbol")
+    print("Expected-Only Candidate Funnel")
     print(
         f"{'Symbol':<10} {'Strategy':<18} {'Candles':>8} {'Signals':>8} "
         f"{'CoreOK':>8} {'TargetOK':>8} {'RewardOK':>8} {'NetOK':>8} "
@@ -501,6 +730,41 @@ def print_report(result: CalibrationResult) -> None:
     print("Best Threshold Combinations By Expected Net Profit")
     for line in best_threshold_lines(result.sweep_rows, key="net"):
         print(line)
+
+    print()
+    print("Realized Exit Simulation")
+    print(f"max_hold_candles={result.max_hold_candles}")
+    if not result.simulation_rows:
+        print("no simulated trades passed production gates")
+        return
+    print(
+        f"{'Symbol':<10} {'Strategy':<18} {'Trades':>7} {'Wins':>6} {'Losses':>7} "
+        f"{'WinRate':>8} {'Gross':>11} {'Costs':>11} {'Net':>11} {'AvgNet':>11} "
+        f"{'Best':>11} {'Worst':>11} {'ExitReasons':<36}"
+    )
+    for row in result.simulation_rows:
+        print(
+            f"{row.symbol:<10} {row.strategy_name:<18} {row.trades:>7} "
+            f"{row.wins:>6} {row.losses:>7} {row.win_rate:>7.1f}% "
+            f"${row.gross_pnl:>10.2f} ${row.costs:>10.2f} ${row.net_pnl:>10.2f} "
+            f"${row.average_net_per_trade:>10.2f} "
+            f"{format_trade_net(row.best_trade):>11} {format_trade_net(row.worst_trade):>11} "
+            f"{format_exit_reasons(row.exit_reason_counts):<36}"
+        )
+
+
+def format_trade_net(trade: SimulationTrade | None) -> str:
+    if trade is None:
+        return "n/a"
+    return f"${trade.realized_net_pnl:.2f}"
+
+
+def format_exit_reasons(exit_reason_counts: dict[str, int]) -> str:
+    if not exit_reason_counts:
+        return "n/a"
+    return ", ".join(
+        f"{reason}:{count}" for reason, count in sorted(exit_reason_counts.items())
+    )
 
 
 def best_threshold_lines(rows: list[SweepStats], key: str) -> list[str]:
@@ -629,6 +893,12 @@ def build_arg_parser() -> argparse.ArgumentParser:
         help="Optional notional used only for calibration expected net profit.",
     )
     parser.add_argument(
+        "--max-hold-candles",
+        type=int,
+        default=60,
+        help="Maximum future candles used for calibration exit simulation.",
+    )
+    parser.add_argument(
         "--self-test",
         action="store_true",
         help="Run internal threshold-gate sanity checks and exit.",
@@ -657,6 +927,7 @@ def main() -> None:
         target_sweep=parse_float_list(args.target_sweep),
         reward_cost_sweep=parse_float_list(args.reward_cost_sweep),
         diagnostic_notional=args.diagnostic_notional,
+        max_hold_candles=args.max_hold_candles,
     )
     print_report(calibrator.run(historical))
 
