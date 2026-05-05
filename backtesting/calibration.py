@@ -202,6 +202,7 @@ class SimulationTrade:
     slippage_costs: float
     total_costs: float
     realized_net_pnl: float
+    metadata: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -216,6 +217,7 @@ class SimulationSummary:
     gross_pnl: float = 0.0
     costs: float = 0.0
     net_pnl: float = 0.0
+    hold_candles_sum: int = 0
     best_trade: SimulationTrade | None = None
     worst_trade: SimulationTrade | None = None
     exit_reason_counts: dict[str, int] = field(default_factory=dict)
@@ -231,6 +233,29 @@ class SimulationSummary:
         if self.trades <= 0:
             return 0.0
         return self.net_pnl / self.trades
+
+    @property
+    def average_hold_candles(self) -> float:
+        if self.trades <= 0:
+            return 0.0
+        return self.hold_candles_sum / self.trades
+
+    @property
+    def stop_loss_hit_rate(self) -> float:
+        return self._exit_rate(("stop_loss_hit", "trailing_stop_hit", "breakeven_stop_hit"))
+
+    @property
+    def take_profit_hit_rate(self) -> float:
+        return self._exit_rate(("take_profit_hit",))
+
+    @property
+    def max_horizon_exit_rate(self) -> float:
+        return self._exit_rate(("max_horizon_exit",))
+
+    def _exit_rate(self, reasons: tuple[str, ...]) -> float:
+        if self.trades <= 0:
+            return 0.0
+        return sum(self.exit_reason_counts.get(reason, 0) for reason in reasons) / self.trades * 100
 
 
 @dataclass(frozen=True)
@@ -255,6 +280,8 @@ class CalibrationResult:
     production_min_expected_net_profit: float
     diagnostic_notional: float
     max_hold_candles: int = 60
+    quality_filter_enabled: bool = False
+    trailing_exits_enabled: bool = False
     rows: list[StrategyCalibrationStats] = field(default_factory=list)
     sweep_rows: list[SweepStats] = field(default_factory=list)
     simulation_rows: list[SimulationSummary] = field(default_factory=list)
@@ -293,6 +320,7 @@ class RealizedOptimizationRow:
     net_pnl: float = 0.0
     gross_profit: float = 0.0
     gross_loss: float = 0.0
+    hold_candles_sum: int = 0
     max_drawdown: float = 0.0
     exit_reason_counts: dict[str, int] = field(default_factory=dict)
 
@@ -316,6 +344,29 @@ class RealizedOptimizationRow:
             return None if self.gross_profit <= 0 else float("inf")
         return self.gross_profit / self.gross_loss
 
+    @property
+    def average_hold_candles(self) -> float:
+        if self.trades <= 0:
+            return 0.0
+        return self.hold_candles_sum / self.trades
+
+    @property
+    def stop_loss_hit_rate(self) -> float:
+        return self._exit_rate(("stop_loss_hit", "trailing_stop_hit", "breakeven_stop_hit"))
+
+    @property
+    def take_profit_hit_rate(self) -> float:
+        return self._exit_rate(("take_profit_hit",))
+
+    @property
+    def max_horizon_exit_rate(self) -> float:
+        return self._exit_rate(("max_horizon_exit",))
+
+    def _exit_rate(self, reasons: tuple[str, ...]) -> float:
+        if self.trades <= 0:
+            return 0.0
+        return sum(self.exit_reason_counts.get(reason, 0) for reason in reasons) / self.trades * 100
+
 
 @dataclass
 class RealizedOptimizationResult:
@@ -325,7 +376,256 @@ class RealizedOptimizationResult:
     production_reward_cost_ratio: float
     production_min_expected_net_profit: float
     diagnostic_notional: float
+    quality_filter_enabled: bool = False
+    trailing_exits_enabled: bool = False
     rows: list[RealizedOptimizationRow] = field(default_factory=list)
+    losing_examples: list[SimulationTrade] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class BacktestQualityDecision:
+    """Backtest-only candidate quality verdict."""
+
+    approved: bool
+    reason: str
+    metadata: dict[str, float | str]
+
+
+class BacktestQualityFilter:
+    """Experimental calibration-only filters from realized backtest failures."""
+
+    def __init__(self, settings: Settings) -> None:
+        self.settings = settings
+
+    def evaluate(
+        self,
+        strategy_name: str,
+        df: pd.DataFrame,
+        signal: StrategySignal,
+    ) -> BacktestQualityDecision:
+        if len(df) < 60:
+            return self._reject("quality_filter_insufficient_data", {})
+
+        side = signal.side
+        price = self._latest(df, "close", signal.entry_price)
+        atr = max(self._latest(df, "atr", price * 0.001), price * 0.0001)
+        atr_bps = atr / max(price, 1e-9) * 10_000
+        ema_fast = self._latest(df, "ema_fast", price)
+        ema_slow = self._latest(df, "ema_slow", price)
+        ema_gap_bps = abs(ema_fast - ema_slow) / max(price, 1e-9) * 10_000
+        trend_slope_bps = self._trend_slope_bps(df, side, price)
+        atr_expansion = self._atr_expansion(df)
+        volume_ratio = self._volume_ratio(df)
+        close_position = self._close_position(df)
+        body_bps = self._body_bps(df, price)
+        candle_range_bps = self._candle_range_bps(df, price)
+        macd_hist = self._latest(df, "macd_hist", 0.0)
+        previous_macd_hist = self._previous(df, "macd_hist", macd_hist)
+        macd_hist_bps = macd_hist / max(price, 1e-9) * 10_000
+        rsi = self._latest(df, "rsi", 50.0)
+        stop_move_bps = abs(signal.entry_price - float(signal.stop_loss or signal.entry_price)) / max(signal.entry_price, 1e-9) * 10_000
+        target_move_bps = abs(float(signal.take_profit or signal.entry_price) - signal.entry_price) / max(signal.entry_price, 1e-9) * 10_000
+        target_stop_ratio = target_move_bps / max(stop_move_bps, 1e-9)
+        stop_atr_multiple = stop_move_bps / max(atr_bps, 1e-9)
+        common_metadata = {
+            "backtest_quality_filter": "checked",
+            "backtest_quality_reason": "",
+            "ema_gap_bps": ema_gap_bps,
+            "trend_slope_bps": trend_slope_bps,
+            "atr_expansion": atr_expansion,
+            "volume_ratio": volume_ratio,
+            "close_position": close_position,
+            "body_bps": body_bps,
+            "candle_range_bps": candle_range_bps,
+            "macd_hist_bps": macd_hist_bps,
+            "rsi": rsi,
+            "stop_move_bps": stop_move_bps,
+            "target_stop_ratio": target_stop_ratio,
+            "stop_atr_multiple": stop_atr_multiple,
+        }
+
+        if candle_range_bps > max(atr_bps * 2.4, self.settings.risk.round_trip_taker_cost_bps * 2.0):
+            return self._reject("exhaustion_candle", common_metadata)
+        if body_bps > max(atr_bps * 1.8, self.settings.risk.round_trip_taker_cost_bps * 1.5):
+            return self._reject("exhaustion_body", common_metadata)
+        if stop_atr_multiple < 0.75:
+            return self._reject("stop_too_tight_for_atr", common_metadata)
+        if target_stop_ratio < max(1.35, self.settings.risk.min_reward_risk_ratio):
+            return self._reject("target_not_large_enough_vs_stop", common_metadata)
+        if target_move_bps < stop_move_bps + self.settings.risk.round_trip_taker_cost_bps * 0.75:
+            return self._reject("target_not_large_enough_after_costs", common_metadata)
+
+        if strategy_name in {"momentum", "breakout"}:
+            decision = self._trend_quality_decision(
+                side=side,
+                ema_fast=ema_fast,
+                ema_slow=ema_slow,
+                ema_gap_bps=ema_gap_bps,
+                trend_slope_bps=trend_slope_bps,
+                atr_expansion=atr_expansion,
+                volume_ratio=volume_ratio,
+                close_position=close_position,
+                macd_hist_bps=macd_hist_bps,
+                rsi=rsi,
+                common_metadata=common_metadata,
+            )
+            if not decision.approved:
+                return decision
+        elif strategy_name == "mean_reversion":
+            decision = self._range_quality_decision(
+                side=side,
+                ema_gap_bps=ema_gap_bps,
+                trend_slope_bps=trend_slope_bps,
+                atr_expansion=atr_expansion,
+                volume_ratio=volume_ratio,
+                close_position=close_position,
+                macd_hist=macd_hist,
+                previous_macd_hist=previous_macd_hist,
+                rsi=rsi,
+                common_metadata=common_metadata,
+            )
+            if not decision.approved:
+                return decision
+
+        return BacktestQualityDecision(
+            approved=True,
+            reason="pass",
+            metadata={
+                **common_metadata,
+                "backtest_quality_filter": "pass",
+                "backtest_quality_reason": "pass",
+            },
+        )
+
+    def _trend_quality_decision(
+        self,
+        side: Side,
+        ema_fast: float,
+        ema_slow: float,
+        ema_gap_bps: float,
+        trend_slope_bps: float,
+        atr_expansion: float,
+        volume_ratio: float,
+        close_position: float,
+        macd_hist_bps: float,
+        rsi: float,
+        common_metadata: dict[str, float | str],
+    ) -> BacktestQualityDecision:
+        trend_aligned = (
+            (side == Side.BUY and ema_fast > ema_slow and trend_slope_bps > 18)
+            or (side == Side.SELL and ema_fast < ema_slow and trend_slope_bps > 18)
+        )
+        if not trend_aligned or ema_gap_bps < 8:
+            return self._reject("trend_regime_not_clear", common_metadata)
+        if atr_expansion < 1.03:
+            return self._reject("volatility_expansion_not_confirmed", common_metadata)
+        if volume_ratio < 1.12:
+            return self._reject("volume_expansion_not_confirmed", common_metadata)
+        if side == Side.BUY and close_position < 0.62:
+            return self._reject("bullish_close_not_confirmed", common_metadata)
+        if side == Side.SELL and close_position > 0.38:
+            return self._reject("bearish_close_not_confirmed", common_metadata)
+        if side == Side.BUY and (macd_hist_bps <= 0.0 or rsi < 54 or rsi > 76):
+            return self._reject("rsi_macd_conflict", common_metadata)
+        if side == Side.SELL and (macd_hist_bps >= 0.0 or rsi > 46 or rsi < 24):
+            return self._reject("rsi_macd_conflict", common_metadata)
+        return BacktestQualityDecision(True, "pass", common_metadata)
+
+    def _range_quality_decision(
+        self,
+        side: Side,
+        ema_gap_bps: float,
+        trend_slope_bps: float,
+        atr_expansion: float,
+        volume_ratio: float,
+        close_position: float,
+        macd_hist: float,
+        previous_macd_hist: float,
+        rsi: float,
+        common_metadata: dict[str, float | str],
+    ) -> BacktestQualityDecision:
+        if ema_gap_bps > 28 or abs(trend_slope_bps) > 55:
+            return self._reject("range_regime_not_confirmed", common_metadata)
+        if atr_expansion > 1.35:
+            return self._reject("range_break_risk_too_high", common_metadata)
+        if volume_ratio > 2.4:
+            return self._reject("volume_spike_against_reversion", common_metadata)
+        if side == Side.BUY and close_position < 0.28:
+            return self._reject("reversion_close_not_confirmed", common_metadata)
+        if side == Side.SELL and close_position > 0.72:
+            return self._reject("reversion_close_not_confirmed", common_metadata)
+        if side == Side.BUY and (rsi > 42 or macd_hist < previous_macd_hist):
+            return self._reject("rsi_macd_conflict", common_metadata)
+        if side == Side.SELL and (rsi < 58 or macd_hist > previous_macd_hist):
+            return self._reject("rsi_macd_conflict", common_metadata)
+        return BacktestQualityDecision(True, "pass", common_metadata)
+
+    def _reject(
+        self,
+        reason: str,
+        metadata: dict[str, float | str],
+    ) -> BacktestQualityDecision:
+        return BacktestQualityDecision(
+            approved=False,
+            reason=reason,
+            metadata={
+                **metadata,
+                "backtest_quality_filter": "reject",
+                "backtest_quality_reason": reason,
+            },
+        )
+
+    def _trend_slope_bps(self, df: pd.DataFrame, side: Side, price: float) -> float:
+        if len(df) < 21:
+            return 0.0
+        previous = self._float(df["close"].iloc[-21], price)
+        raw_slope = (price - previous) / max(price, 1e-9) * 10_000
+        return raw_slope * side.direction
+
+    def _atr_expansion(self, df: pd.DataFrame) -> float:
+        latest = self._latest(df, "atr", 0.0)
+        if "atr" not in df.columns or len(df) < 50:
+            return 1.0
+        baseline = self._float(df["atr"].tail(50).mean(), latest)
+        return latest / max(baseline, 1e-9)
+
+    def _volume_ratio(self, df: pd.DataFrame) -> float:
+        latest = self._latest(df, "volume", 0.0)
+        if len(df) < 31:
+            return 1.0
+        baseline = self._float(df["volume"].iloc[-31:-1].mean(), latest)
+        return latest / max(baseline, 1e-9)
+
+    def _close_position(self, df: pd.DataFrame) -> float:
+        high = self._latest(df, "high", 0.0)
+        low = self._latest(df, "low", high)
+        close = self._latest(df, "close", low)
+        return (close - low) / max(high - low, 1e-9)
+
+    def _body_bps(self, df: pd.DataFrame, price: float) -> float:
+        return abs(self._latest(df, "close", price) - self._latest(df, "open", price)) / max(price, 1e-9) * 10_000
+
+    def _candle_range_bps(self, df: pd.DataFrame, price: float) -> float:
+        return (self._latest(df, "high", price) - self._latest(df, "low", price)) / max(price, 1e-9) * 10_000
+
+    def _latest(self, df: pd.DataFrame, column: str, default: float) -> float:
+        if column not in df.columns or len(df) == 0:
+            return default
+        return self._float(df[column].iloc[-1], default)
+
+    def _previous(self, df: pd.DataFrame, column: str, default: float) -> float:
+        if column not in df.columns or len(df) < 2:
+            return default
+        return self._float(df[column].iloc[-2], default)
+
+    def _float(self, value: Any, default: float = 0.0) -> float:
+        try:
+            number = float(value)
+        except (TypeError, ValueError):
+            return default
+        if pd.isna(number):
+            return default
+        return number
 
 
 class HistoricalStrategyCalibrator:
@@ -338,12 +638,21 @@ class HistoricalStrategyCalibrator:
         reward_cost_sweep: tuple[float, ...] = DEFAULT_REWARD_COST_SWEEP,
         diagnostic_notional: float | None = None,
         max_hold_candles: int = 60,
+        quality_filter_enabled: bool = False,
+        trailing_exits_enabled: bool = False,
+        breakeven_trigger_r: float = 1.0,
+        trailing_atr_multiplier: float = 1.0,
     ) -> None:
         self.settings = settings
         self.target_sweep = target_sweep
         self.reward_cost_sweep = reward_cost_sweep
         self.diagnostic_notional = diagnostic_notional or self._default_diagnostic_notional()
         self.max_hold_candles = max(1, int(max_hold_candles))
+        self.quality_filter_enabled = quality_filter_enabled
+        self.quality_filter = BacktestQualityFilter(settings)
+        self.trailing_exits_enabled = trailing_exits_enabled
+        self.breakeven_trigger_r = max(float(breakeven_trigger_r), 0.0)
+        self.trailing_atr_multiplier = max(float(trailing_atr_multiplier), 0.0)
 
     def run(self, historical_by_symbol: dict[str, pd.DataFrame]) -> CalibrationResult:
         rows: list[StrategyCalibrationStats] = []
@@ -364,6 +673,8 @@ class HistoricalStrategyCalibrator:
             production_min_expected_net_profit=self.settings.risk.min_expected_net_profit_usd,
             diagnostic_notional=self.diagnostic_notional,
             max_hold_candles=self.max_hold_candles,
+            quality_filter_enabled=self.quality_filter_enabled,
+            trailing_exits_enabled=self.trailing_exits_enabled,
             rows=rows,
             sweep_rows=sweep_rows,
             simulation_rows=self._summarize_simulation_trades(simulation_trades),
@@ -439,17 +750,25 @@ class HistoricalStrategyCalibrator:
                 stats.passing_reward_cost_ratio += 1
             if production_gate.expected_net_pass:
                 stats.passing_expected_net_profit += 1
+            backtest_quality_passes = True
             if production_gate.all_pass and self._is_simulatable_signal(signal):
-                stats.would_be_trades += 1
-                simulation_trades.append(
-                    self._simulate_exit(
-                        symbol=symbol,
-                        strategy_name=strategy.name,
-                        df=df,
-                        entry_index=index,
-                        signal=signal,
+                if self.quality_filter_enabled:
+                    quality_decision = self.quality_filter.evaluate(strategy.name, window, signal)
+                    if not quality_decision.approved:
+                        backtest_quality_passes = False
+                    else:
+                        signal.metadata.update(quality_decision.metadata)
+                if backtest_quality_passes:
+                    stats.would_be_trades += 1
+                    simulation_trades.append(
+                        self._simulate_exit(
+                            symbol=symbol,
+                            strategy_name=strategy.name,
+                            df=df,
+                            entry_index=index,
+                            signal=signal,
+                        )
                     )
-                )
 
             self._record_sweeps(sweep_lookup, target_move_bps, reward_cost_ratio, expected_net_profit)
 
@@ -489,6 +808,12 @@ class HistoricalStrategyCalibrator:
         future_high = entry_price
         future_low = entry_price
         future_high_low_path: list[dict[str, float]] = []
+        entry_atr = self._finite_number(signal.metadata.get("atr"), 0.0)
+        if entry_atr <= 0 and "atr" in df.columns:
+            entry_atr = self._finite_number(df["atr"].iloc[entry_index], 0.0)
+        dynamic_stop = stop_loss
+        dynamic_stop_reason = "stop_loss_hit"
+        risk_per_unit = abs(entry_price - stop_loss)
 
         if len(future) > 0:
             future_high = self._finite_number(future["high"].max(), entry_price)
@@ -512,19 +837,31 @@ class HistoricalStrategyCalibrator:
                 timestamp = candle["timestamp"]
 
                 if signal.side == Side.BUY:
-                    stop_hit = low <= stop_loss
+                    stop_hit = low <= dynamic_stop
                     target_hit = high >= take_profit
                 else:
-                    stop_hit = high >= stop_loss
+                    stop_hit = high >= dynamic_stop
                     target_hit = low <= take_profit
 
                 if stop_hit:
-                    exit_price = stop_loss
-                    exit_reason = "stop_loss_hit"
+                    exit_price = dynamic_stop
+                    exit_reason = dynamic_stop_reason
                 elif target_hit:
                     exit_price = take_profit
                     exit_reason = "take_profit_hit"
                 else:
+                    if self.trailing_exits_enabled and risk_per_unit > 0:
+                        dynamic_stop, dynamic_stop_reason = self._updated_dynamic_stop(
+                            side=signal.side,
+                            entry_price=entry_price,
+                            current_stop=dynamic_stop,
+                            current_reason=dynamic_stop_reason,
+                            high=high,
+                            low=low,
+                            take_profit=take_profit,
+                            atr=entry_atr,
+                            risk_per_unit=risk_per_unit,
+                        )
                     continue
 
                 exit_timestamp = timestamp
@@ -557,7 +894,45 @@ class HistoricalStrategyCalibrator:
             slippage_costs=slippage_costs,
             total_costs=total_costs,
             realized_net_pnl=net_pnl,
+            metadata=dict(signal.metadata),
         )
+
+    def _updated_dynamic_stop(
+        self,
+        side: Side,
+        entry_price: float,
+        current_stop: float,
+        current_reason: str,
+        high: float,
+        low: float,
+        take_profit: float,
+        atr: float,
+        risk_per_unit: float,
+    ) -> tuple[float, str]:
+        if atr <= 0:
+            return current_stop, current_reason
+
+        updated_stop = current_stop
+        updated_reason = current_reason
+        if side == Side.BUY:
+            favorable_move = high - entry_price
+            if favorable_move >= risk_per_unit * self.breakeven_trigger_r and entry_price > updated_stop:
+                updated_stop = entry_price
+                updated_reason = "breakeven_stop_hit"
+            trailing_stop = high - atr * self.trailing_atr_multiplier
+            if trailing_stop > updated_stop and trailing_stop < take_profit:
+                updated_stop = trailing_stop
+                updated_reason = "trailing_stop_hit"
+        elif side == Side.SELL:
+            favorable_move = entry_price - low
+            if favorable_move >= risk_per_unit * self.breakeven_trigger_r and entry_price < updated_stop:
+                updated_stop = entry_price
+                updated_reason = "breakeven_stop_hit"
+            trailing_stop = low + atr * self.trailing_atr_multiplier
+            if trailing_stop < updated_stop and trailing_stop > take_profit:
+                updated_stop = trailing_stop
+                updated_reason = "trailing_stop_hit"
+        return updated_stop, updated_reason
 
     def _realized_pnl_components(
         self,
@@ -603,6 +978,7 @@ class HistoricalStrategyCalibrator:
                     gross_pnl=sum(trade.realized_gross_pnl for trade in items),
                     costs=sum(trade.total_costs for trade in items),
                     net_pnl=sum(trade.realized_net_pnl for trade in items),
+                    hold_candles_sum=sum(trade.hold_candles for trade in items),
                     best_trade=best_trade,
                     worst_trade=worst_trade,
                     exit_reason_counts=dict(exit_counts),
@@ -681,6 +1057,10 @@ class RealizedSweepOptimizer:
         atr_tp_sweep: tuple[float, ...],
         atr_stop_sweep: tuple[float, ...],
         diagnostic_notional: float | None = None,
+        quality_filter_enabled: bool = True,
+        trailing_exits_enabled: bool = False,
+        breakeven_trigger_r: float = 1.0,
+        trailing_atr_multiplier: float = 1.0,
     ) -> None:
         self.settings = settings
         self.timeframe = timeframe
@@ -690,9 +1070,14 @@ class RealizedSweepOptimizer:
         self.atr_tp_sweep = atr_tp_sweep
         self.atr_stop_sweep = atr_stop_sweep
         self.diagnostic_notional = diagnostic_notional
+        self.quality_filter_enabled = quality_filter_enabled
+        self.trailing_exits_enabled = trailing_exits_enabled
+        self.breakeven_trigger_r = breakeven_trigger_r
+        self.trailing_atr_multiplier = trailing_atr_multiplier
 
     def run(self, historical_by_symbol: dict[str, pd.DataFrame]) -> RealizedOptimizationResult:
         rows: list[RealizedOptimizationRow] = []
+        all_trades: list[SimulationTrade] = []
         for config in self._configs():
             calibration_settings = self._settings_for_config(config)
             calibrator = HistoricalStrategyCalibrator(
@@ -701,8 +1086,13 @@ class RealizedSweepOptimizer:
                 reward_cost_sweep=(config.min_reward_cost_ratio,),
                 diagnostic_notional=self.diagnostic_notional,
                 max_hold_candles=config.max_hold_candles,
+                quality_filter_enabled=self.quality_filter_enabled,
+                trailing_exits_enabled=self.trailing_exits_enabled,
+                breakeven_trigger_r=self.breakeven_trigger_r,
+                trailing_atr_multiplier=self.trailing_atr_multiplier,
             )
             result = calibrator.run(historical_by_symbol)
+            all_trades.extend(result.simulation_trades)
             trades_by_key = self._group_trades(result.simulation_trades)
             for stats in result.rows:
                 trades = trades_by_key.get((stats.symbol, stats.strategy_name), [])
@@ -718,7 +1108,10 @@ class RealizedSweepOptimizer:
             production_reward_cost_ratio=self.settings.risk.min_reward_to_cost_ratio,
             production_min_expected_net_profit=self.settings.risk.min_expected_net_profit_usd,
             diagnostic_notional=diagnostic_notional,
+            quality_filter_enabled=self.quality_filter_enabled,
+            trailing_exits_enabled=self.trailing_exits_enabled,
             rows=rows,
+            losing_examples=self._losing_examples(all_trades),
         )
 
     def _configs(self) -> list[RealizedSweepConfig]:
@@ -789,6 +1182,7 @@ class RealizedSweepOptimizer:
             net_pnl=sum(net_values),
             gross_profit=gross_profit,
             gross_loss=gross_loss,
+            hold_candles_sum=sum(trade.hold_candles for trade in sorted_trades),
             max_drawdown=self._max_drawdown(net_values),
             exit_reason_counts=dict(exit_counts),
         )
@@ -802,6 +1196,12 @@ class RealizedSweepOptimizer:
             peak = max(peak, equity)
             max_drawdown = max(max_drawdown, peak - equity)
         return max_drawdown
+
+    def _losing_examples(self, trades: list[SimulationTrade]) -> list[SimulationTrade]:
+        return sorted(
+            [trade for trade in trades if trade.realized_net_pnl < 0],
+            key=lambda trade: trade.realized_net_pnl,
+        )[:8]
 
 
 def load_csv(path: Path, limit: int | None = None) -> pd.DataFrame:
@@ -893,6 +1293,8 @@ def print_report(result: CalibrationResult) -> None:
     print("expected-only section estimates profit from candidate target and configured costs")
     print("realized simulation section walks future candle high/low paths after WouldTrade candidates")
     print("same-candle stop/target ambiguity is resolved conservatively as stop_loss_hit")
+    print(f"backtest_quality_filter={'enabled' if result.quality_filter_enabled else 'disabled'}")
+    print(f"backtest_trailing_exits={'enabled' if result.trailing_exits_enabled else 'disabled'}")
     print("averages are over all directional candidates, not only WouldTrade candidates")
     print(
         f"production_min_target_move_bps={result.production_target_move_bps:.2f} | "
@@ -949,6 +1351,7 @@ def print_report(result: CalibrationResult) -> None:
     print(
         f"{'Symbol':<10} {'Strategy':<18} {'Trades':>7} {'Wins':>6} {'Losses':>7} "
         f"{'WinRate':>8} {'Gross':>11} {'Costs':>11} {'Net':>11} {'AvgNet':>11} "
+        f"{'Stop%':>7} {'TP%':>7} {'Hor%':>7} {'AvgHold':>8} "
         f"{'Best':>11} {'Worst':>11} {'ExitReasons':<36}"
     )
     for row in result.simulation_rows:
@@ -957,9 +1360,12 @@ def print_report(result: CalibrationResult) -> None:
             f"{row.wins:>6} {row.losses:>7} {row.win_rate:>7.1f}% "
             f"${row.gross_pnl:>10.2f} ${row.costs:>10.2f} ${row.net_pnl:>10.2f} "
             f"${row.average_net_per_trade:>10.2f} "
+            f"{row.stop_loss_hit_rate:>6.1f}% {row.take_profit_hit_rate:>6.1f}% "
+            f"{row.max_horizon_exit_rate:>6.1f}% {row.average_hold_candles:>8.1f} "
             f"{format_trade_net(row.best_trade):>11} {format_trade_net(row.worst_trade):>11} "
             f"{format_exit_reasons(row.exit_reason_counts):<36}"
         )
+    print_losing_setup_examples(result.simulation_trades)
 
 
 def format_trade_net(trade: SimulationTrade | None) -> str:
@@ -982,6 +1388,8 @@ def print_realized_optimization_report(result: RealizedOptimizationResult) -> No
     print("realized historical simulation")
     print("production thresholds unchanged")
     print("temporary sweep settings do not change main.py, settings/.env, or live/paper bot behavior")
+    print(f"backtest_quality_filter={'enabled' if result.quality_filter_enabled else 'disabled'}")
+    print(f"backtest_trailing_exits={'enabled' if result.trailing_exits_enabled else 'disabled'}")
     print(
         f"production_min_target_move_bps={result.production_target_move_bps:.2f} | "
         f"production_min_reward_cost_ratio={result.production_reward_cost_ratio:.2f}x | "
@@ -1016,6 +1424,7 @@ def print_realized_optimization_report(result: RealizedOptimizationResult) -> No
         "Worst Combinations",
         sorted(traded_rows, key=lambda row: (row.net_pnl, row.average_net_per_trade))[:10],
     )
+    print_losing_setup_examples(result.losing_examples)
 
 
 def print_realized_optimization_rows(
@@ -1030,7 +1439,8 @@ def print_realized_optimization_rows(
         f"{'TF':<5} {'Symbol':<10} {'Strategy':<18} {'Tgt':>7} {'R/C':>6} "
         f"{'Hold':>5} {'ATRTP':>6} {'ATRSL':>6} {'Trades':>7} {'Wins':>6} "
         f"{'Loss':>6} {'Win%':>7} {'Gross':>11} {'Costs':>11} {'Net':>11} "
-        f"{'AvgNet':>11} {'PF':>7} {'MaxDD':>10} {'ExitReasons':<36}"
+        f"{'AvgNet':>11} {'PF':>7} {'MaxDD':>10} {'Stop%':>7} {'TP%':>7} "
+        f"{'Hor%':>7} {'AvgHold':>8} {'ExitReasons':<36}"
     )
     for row in rows:
         print(
@@ -1041,7 +1451,9 @@ def print_realized_optimization_rows(
             f"{row.losses:>6} {row.win_rate:>6.1f}% ${row.gross_pnl:>10.2f} "
             f"${row.costs:>10.2f} ${row.net_pnl:>10.2f} "
             f"${row.average_net_per_trade:>10.2f} {format_profit_factor(row.profit_factor):>7} "
-            f"${row.max_drawdown:>9.2f} {format_exit_reasons(row.exit_reason_counts):<36}"
+            f"${row.max_drawdown:>9.2f} {row.stop_loss_hit_rate:>6.1f}% "
+            f"{row.take_profit_hit_rate:>6.1f}% {row.max_horizon_exit_rate:>6.1f}% "
+            f"{row.average_hold_candles:>8.1f} {format_exit_reasons(row.exit_reason_counts):<36}"
         )
 
 
@@ -1051,6 +1463,49 @@ def format_profit_factor(value: float | None) -> str:
     if value == float("inf"):
         return "inf"
     return f"{value:.2f}"
+
+
+def print_losing_setup_examples(trades: list[SimulationTrade]) -> None:
+    losing_trades = sorted(
+        [trade for trade in trades if trade.realized_net_pnl < 0],
+        key=lambda trade: trade.realized_net_pnl,
+    )[:8]
+    print()
+    print("Losing Setup Examples")
+    if not losing_trades:
+        print("none")
+        return
+    print(
+        f"{'Symbol':<10} {'Strategy':<18} {'Side':<5} {'Exit':<20} {'Hold':>5} "
+        f"{'Net':>10} {'RSI':>7} {'MACD':>8} {'ATRbps':>8} {'Vol':>6} "
+        f"{'Close':>7} {'StopBps':>8} {'Tgt/Stop':>8} {'QualityReason':<32}"
+    )
+    for trade in losing_trades:
+        metadata = trade.metadata
+        print(
+            f"{trade.symbol:<10} {trade.strategy_name:<18} {trade.side.value:<5} "
+            f"{trade.exit_reason:<20} {trade.hold_candles:>5} "
+            f"${trade.realized_net_pnl:>9.2f} "
+            f"{format_metadata_float(metadata, 'rsi'):>7} "
+            f"{format_metadata_float(metadata, 'macd_hist_bps'):>8} "
+            f"{format_metadata_float(metadata, 'atr_bps'):>8} "
+            f"{format_metadata_float(metadata, 'volume_ratio'):>6} "
+            f"{format_metadata_float(metadata, 'close_position'):>7} "
+            f"{format_metadata_float(metadata, 'stop_move_bps'):>8} "
+            f"{format_metadata_float(metadata, 'target_stop_ratio'):>8} "
+            f"{str(metadata.get('backtest_quality_reason', 'n/a')):<32}"
+        )
+
+
+def format_metadata_float(metadata: dict[str, Any], key: str) -> str:
+    value = metadata.get(key)
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return "n/a"
+    if pd.isna(number):
+        return "n/a"
+    return f"{number:.2f}"
 
 
 def best_threshold_lines(rows: list[SweepStats], key: str) -> list[str]:
@@ -1214,6 +1669,33 @@ def build_arg_parser() -> argparse.ArgumentParser:
         help="Run calibration-only realized optimization sweeps over thresholds, ATR exits, and max hold.",
     )
     parser.add_argument(
+        "--backtest-quality-filter",
+        action="store_true",
+        help="Enable experimental calibration-only regime and entry-quality filters for normal calibration.",
+    )
+    parser.add_argument(
+        "--disable-backtest-quality-filter",
+        action="store_true",
+        help="Disable the experimental quality filter that is enabled by default for --realized-sweep.",
+    )
+    parser.add_argument(
+        "--backtest-trailing-exits",
+        action="store_true",
+        help="Enable optional calibration-only breakeven/trailing stop simulation.",
+    )
+    parser.add_argument(
+        "--breakeven-trigger-r",
+        type=float,
+        default=1.0,
+        help="Favorable move in R before simulated breakeven stop is allowed.",
+    )
+    parser.add_argument(
+        "--trailing-atr-multiplier",
+        type=float,
+        default=1.0,
+        help="ATR multiple for optional calibration-only trailing stop simulation.",
+    )
+    parser.add_argument(
         "--max-hold-sweep",
         default=format_int_list(DEFAULT_REALIZED_MAX_HOLD_SWEEP),
         help="Comma-separated max-hold candle values for --realized-sweep.",
@@ -1258,6 +1740,9 @@ def main() -> None:
             else DEFAULT_REWARD_COST_SWEEP
         )
     )
+    quality_filter_enabled = (
+        args.backtest_quality_filter or args.realized_sweep
+    ) and not args.disable_backtest_quality_filter
     symbols = tuple(symbol.strip() for symbol in args.symbols.split(",") if symbol.strip())
     historical = load_historical_inputs(
         symbols=symbols,
@@ -1276,6 +1761,10 @@ def main() -> None:
             atr_tp_sweep=parse_float_list(args.atr_tp_sweep),
             atr_stop_sweep=parse_float_list(args.atr_stop_sweep),
             diagnostic_notional=args.diagnostic_notional,
+            quality_filter_enabled=quality_filter_enabled,
+            trailing_exits_enabled=args.backtest_trailing_exits,
+            breakeven_trigger_r=args.breakeven_trigger_r,
+            trailing_atr_multiplier=args.trailing_atr_multiplier,
         )
         print_realized_optimization_report(optimizer.run(historical))
         return
@@ -1285,6 +1774,10 @@ def main() -> None:
         reward_cost_sweep=reward_cost_sweep,
         diagnostic_notional=args.diagnostic_notional,
         max_hold_candles=args.max_hold_candles,
+        quality_filter_enabled=quality_filter_enabled,
+        trailing_exits_enabled=args.backtest_trailing_exits,
+        breakeven_trigger_r=args.breakeven_trigger_r,
+        trailing_atr_multiplier=args.trailing_atr_multiplier,
     )
     print_report(calibrator.run(historical))
 
