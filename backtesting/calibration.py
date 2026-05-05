@@ -9,7 +9,8 @@ from __future__ import annotations
 
 import argparse
 from collections import Counter, defaultdict
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
+from itertools import product
 from pathlib import Path
 from typing import Any
 
@@ -29,6 +30,11 @@ from strategies.base_strategy import BaseStrategy
 
 DEFAULT_TARGET_SWEEP = (25.0, 50.0, 75.0, 100.0)
 DEFAULT_REWARD_COST_SWEEP = (1.5, 2.0, 3.0)
+DEFAULT_REALIZED_TARGET_SWEEP = (75.0, 100.0, 125.0, 150.0, 200.0)
+DEFAULT_REALIZED_REWARD_COST_SWEEP = (2.0, 3.0, 4.0)
+DEFAULT_REALIZED_MAX_HOLD_SWEEP = (16, 32, 48, 96)
+DEFAULT_REALIZED_ATR_TP_SWEEP = (2.0, 3.0, 4.0, 5.0)
+DEFAULT_REALIZED_ATR_STOP_SWEEP = (0.75, 1.0, 1.5, 2.0)
 CORE_CHECKS = ("rsi_check", "ema_trend_check", "macd_check", "volatility_atr_check")
 
 
@@ -253,6 +259,73 @@ class CalibrationResult:
     sweep_rows: list[SweepStats] = field(default_factory=list)
     simulation_rows: list[SimulationSummary] = field(default_factory=list)
     simulation_trades: list[SimulationTrade] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class RealizedSweepConfig:
+    """One calibration-only realized optimization combination."""
+
+    timeframe: str
+    min_target_move_bps: float
+    min_reward_cost_ratio: float
+    max_hold_candles: int
+    atr_take_profit_multiplier: float
+    atr_stop_loss_multiplier: float
+
+
+@dataclass
+class RealizedOptimizationRow:
+    """Realized simulation stats for one symbol/strategy/sweep combination."""
+
+    timeframe: str
+    symbol: str
+    strategy_name: str
+    min_target_move_bps: float
+    min_reward_cost_ratio: float
+    max_hold_candles: int
+    atr_take_profit_multiplier: float
+    atr_stop_loss_multiplier: float
+    trades: int = 0
+    wins: int = 0
+    losses: int = 0
+    gross_pnl: float = 0.0
+    costs: float = 0.0
+    net_pnl: float = 0.0
+    gross_profit: float = 0.0
+    gross_loss: float = 0.0
+    max_drawdown: float = 0.0
+    exit_reason_counts: dict[str, int] = field(default_factory=dict)
+
+    @property
+    def win_rate(self) -> float:
+        if self.trades <= 0:
+            return 0.0
+        return self.wins / self.trades * 100
+
+    @property
+    def average_net_per_trade(self) -> float:
+        if self.trades <= 0:
+            return 0.0
+        return self.net_pnl / self.trades
+
+    @property
+    def profit_factor(self) -> float | None:
+        if self.trades <= 0:
+            return None
+        if self.gross_loss <= 0:
+            return None if self.gross_profit <= 0 else float("inf")
+        return self.gross_profit / self.gross_loss
+
+
+@dataclass
+class RealizedOptimizationResult:
+    """Complete realized optimization report data."""
+
+    production_target_move_bps: float
+    production_reward_cost_ratio: float
+    production_min_expected_net_profit: float
+    diagnostic_notional: float
+    rows: list[RealizedOptimizationRow] = field(default_factory=list)
 
 
 class HistoricalStrategyCalibrator:
@@ -595,6 +668,142 @@ class HistoricalStrategyCalibrator:
         return number
 
 
+class RealizedSweepOptimizer:
+    """Calibration-only realized sweep over strategy edge and exit settings."""
+
+    def __init__(
+        self,
+        settings: Settings,
+        timeframe: str,
+        target_sweep: tuple[float, ...],
+        reward_cost_sweep: tuple[float, ...],
+        max_hold_sweep: tuple[int, ...],
+        atr_tp_sweep: tuple[float, ...],
+        atr_stop_sweep: tuple[float, ...],
+        diagnostic_notional: float | None = None,
+    ) -> None:
+        self.settings = settings
+        self.timeframe = timeframe
+        self.target_sweep = target_sweep
+        self.reward_cost_sweep = reward_cost_sweep
+        self.max_hold_sweep = max_hold_sweep
+        self.atr_tp_sweep = atr_tp_sweep
+        self.atr_stop_sweep = atr_stop_sweep
+        self.diagnostic_notional = diagnostic_notional
+
+    def run(self, historical_by_symbol: dict[str, pd.DataFrame]) -> RealizedOptimizationResult:
+        rows: list[RealizedOptimizationRow] = []
+        for config in self._configs():
+            calibration_settings = self._settings_for_config(config)
+            calibrator = HistoricalStrategyCalibrator(
+                settings=calibration_settings,
+                target_sweep=(config.min_target_move_bps,),
+                reward_cost_sweep=(config.min_reward_cost_ratio,),
+                diagnostic_notional=self.diagnostic_notional,
+                max_hold_candles=config.max_hold_candles,
+            )
+            result = calibrator.run(historical_by_symbol)
+            trades_by_key = self._group_trades(result.simulation_trades)
+            for stats in result.rows:
+                trades = trades_by_key.get((stats.symbol, stats.strategy_name), [])
+                rows.append(self._row_from_trades(config, stats.symbol, stats.strategy_name, trades))
+
+        diagnostic_notional = (
+            self.diagnostic_notional
+            if self.diagnostic_notional is not None
+            else HistoricalStrategyCalibrator(self.settings)._default_diagnostic_notional()
+        )
+        return RealizedOptimizationResult(
+            production_target_move_bps=self.settings.risk.min_target_move_bps,
+            production_reward_cost_ratio=self.settings.risk.min_reward_to_cost_ratio,
+            production_min_expected_net_profit=self.settings.risk.min_expected_net_profit_usd,
+            diagnostic_notional=diagnostic_notional,
+            rows=rows,
+        )
+
+    def _configs(self) -> list[RealizedSweepConfig]:
+        return [
+            RealizedSweepConfig(
+                timeframe=self.timeframe,
+                min_target_move_bps=float(target),
+                min_reward_cost_ratio=float(reward_cost),
+                max_hold_candles=max(1, int(max_hold)),
+                atr_take_profit_multiplier=float(atr_tp),
+                atr_stop_loss_multiplier=float(atr_stop),
+            )
+            for target, reward_cost, max_hold, atr_tp, atr_stop in product(
+                self.target_sweep,
+                self.reward_cost_sweep,
+                self.max_hold_sweep,
+                self.atr_tp_sweep,
+                self.atr_stop_sweep,
+            )
+        ]
+
+    def _settings_for_config(self, config: RealizedSweepConfig) -> Settings:
+        risk = replace(
+            self.settings.risk,
+            min_target_move_bps=config.min_target_move_bps,
+            min_reward_to_cost_ratio=config.min_reward_cost_ratio,
+            min_reward_cost_multiple=config.min_reward_cost_ratio,
+            atr_take_profit_multiplier=config.atr_take_profit_multiplier,
+            atr_stop_loss_multiplier=config.atr_stop_loss_multiplier,
+        )
+        return replace(self.settings, risk=risk)
+
+    def _group_trades(
+        self,
+        trades: list[SimulationTrade],
+    ) -> dict[tuple[str, str], list[SimulationTrade]]:
+        grouped: dict[tuple[str, str], list[SimulationTrade]] = defaultdict(list)
+        for trade in trades:
+            grouped[(trade.symbol, trade.strategy_name)].append(trade)
+        return grouped
+
+    def _row_from_trades(
+        self,
+        config: RealizedSweepConfig,
+        symbol: str,
+        strategy_name: str,
+        trades: list[SimulationTrade],
+    ) -> RealizedOptimizationRow:
+        sorted_trades = sorted(trades, key=lambda trade: (trade.entry_index, trade.exit_timestamp))
+        exit_counts = Counter(trade.exit_reason for trade in sorted_trades)
+        net_values = [trade.realized_net_pnl for trade in sorted_trades]
+        gross_profit = sum(value for value in net_values if value > 0)
+        gross_loss = abs(sum(value for value in net_values if value < 0))
+        return RealizedOptimizationRow(
+            timeframe=config.timeframe,
+            symbol=symbol,
+            strategy_name=strategy_name,
+            min_target_move_bps=config.min_target_move_bps,
+            min_reward_cost_ratio=config.min_reward_cost_ratio,
+            max_hold_candles=config.max_hold_candles,
+            atr_take_profit_multiplier=config.atr_take_profit_multiplier,
+            atr_stop_loss_multiplier=config.atr_stop_loss_multiplier,
+            trades=len(sorted_trades),
+            wins=sum(1 for value in net_values if value > 0),
+            losses=sum(1 for value in net_values if value <= 0),
+            gross_pnl=sum(trade.realized_gross_pnl for trade in sorted_trades),
+            costs=sum(trade.total_costs for trade in sorted_trades),
+            net_pnl=sum(net_values),
+            gross_profit=gross_profit,
+            gross_loss=gross_loss,
+            max_drawdown=self._max_drawdown(net_values),
+            exit_reason_counts=dict(exit_counts),
+        )
+
+    def _max_drawdown(self, net_values: list[float]) -> float:
+        equity = 0.0
+        peak = 0.0
+        max_drawdown = 0.0
+        for value in net_values:
+            equity += value
+            peak = max(peak, equity)
+            max_drawdown = max(max_drawdown, peak - equity)
+        return max_drawdown
+
+
 def load_csv(path: Path, limit: int | None = None) -> pd.DataFrame:
     """Load OHLCV CSV data with either named or first-six ccxt-style columns."""
 
@@ -767,6 +976,83 @@ def format_exit_reasons(exit_reason_counts: dict[str, int]) -> str:
     )
 
 
+def print_realized_optimization_report(result: RealizedOptimizationResult) -> None:
+    print("Realized Backtest Optimization Report")
+    print("calibration only")
+    print("realized historical simulation")
+    print("production thresholds unchanged")
+    print("temporary sweep settings do not change main.py, settings/.env, or live/paper bot behavior")
+    print(
+        f"production_min_target_move_bps={result.production_target_move_bps:.2f} | "
+        f"production_min_reward_cost_ratio={result.production_reward_cost_ratio:.2f}x | "
+        f"production_min_expected_net_profit=${result.production_min_expected_net_profit:.2f} | "
+        f"diagnostic_notional=${result.diagnostic_notional:,.2f}"
+    )
+    print()
+    print_realized_optimization_rows("All Realized Sweep Combinations", result.rows)
+
+    traded_rows = [row for row in result.rows if row.trades > 0]
+    print()
+    print_realized_optimization_rows(
+        "Best Combinations By Realized Net PnL",
+        sorted(traded_rows, key=lambda row: (row.net_pnl, row.average_net_per_trade), reverse=True)[:10],
+    )
+    print()
+    print_realized_optimization_rows(
+        "Best Combinations By Avg Net Per Trade",
+        sorted(traded_rows, key=lambda row: (row.average_net_per_trade, row.net_pnl), reverse=True)[:10],
+    )
+    print()
+    print_realized_optimization_rows(
+        "Best Combinations With At Least 30 Trades",
+        sorted(
+            [row for row in traded_rows if row.trades >= 30],
+            key=lambda row: (row.net_pnl, row.average_net_per_trade),
+            reverse=True,
+        )[:10],
+    )
+    print()
+    print_realized_optimization_rows(
+        "Worst Combinations",
+        sorted(traded_rows, key=lambda row: (row.net_pnl, row.average_net_per_trade))[:10],
+    )
+
+
+def print_realized_optimization_rows(
+    title: str,
+    rows: list[RealizedOptimizationRow],
+) -> None:
+    print(title)
+    if not rows:
+        print("none")
+        return
+    print(
+        f"{'TF':<5} {'Symbol':<10} {'Strategy':<18} {'Tgt':>7} {'R/C':>6} "
+        f"{'Hold':>5} {'ATRTP':>6} {'ATRSL':>6} {'Trades':>7} {'Wins':>6} "
+        f"{'Loss':>6} {'Win%':>7} {'Gross':>11} {'Costs':>11} {'Net':>11} "
+        f"{'AvgNet':>11} {'PF':>7} {'MaxDD':>10} {'ExitReasons':<36}"
+    )
+    for row in rows:
+        print(
+            f"{row.timeframe:<5} {row.symbol:<10} {row.strategy_name:<18} "
+            f"{row.min_target_move_bps:>7.2f} {row.min_reward_cost_ratio:>6.2f} "
+            f"{row.max_hold_candles:>5} {row.atr_take_profit_multiplier:>6.2f} "
+            f"{row.atr_stop_loss_multiplier:>6.2f} {row.trades:>7} {row.wins:>6} "
+            f"{row.losses:>6} {row.win_rate:>6.1f}% ${row.gross_pnl:>10.2f} "
+            f"${row.costs:>10.2f} ${row.net_pnl:>10.2f} "
+            f"${row.average_net_per_trade:>10.2f} {format_profit_factor(row.profit_factor):>7} "
+            f"${row.max_drawdown:>9.2f} {format_exit_reasons(row.exit_reason_counts):<36}"
+        )
+
+
+def format_profit_factor(value: float | None) -> str:
+    if value is None:
+        return "n/a"
+    if value == float("inf"):
+        return "inf"
+    return f"{value:.2f}"
+
+
 def best_threshold_lines(rows: list[SweepStats], key: str) -> list[str]:
     grouped: dict[tuple[float, float], dict[str, float]] = defaultdict(
         lambda: {"count": 0.0, "net": 0.0}
@@ -792,6 +1078,18 @@ def best_threshold_lines(rows: list[SweepStats], key: str) -> list[str]:
 
 def parse_float_list(raw: str) -> tuple[float, ...]:
     return tuple(float(item.strip()) for item in raw.split(",") if item.strip())
+
+
+def parse_int_list(raw: str) -> tuple[int, ...]:
+    return tuple(int(item.strip()) for item in raw.split(",") if item.strip())
+
+
+def format_float_list(values: tuple[float, ...]) -> str:
+    return ",".join(f"{value:g}" for value in values)
+
+
+def format_int_list(values: tuple[int, ...]) -> str:
+    return ",".join(str(value) for value in values)
 
 
 def run_internal_self_test() -> None:
@@ -856,10 +1154,16 @@ def run_internal_self_test() -> None:
 
 def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Calibrate strategy edge on historical OHLCV candles.")
+    loaded_settings = load_settings()
     parser.add_argument(
         "--symbols",
-        default=",".join(load_settings().trading.symbols),
+        default=",".join(loaded_settings.trading.symbols),
         help="Comma-separated symbols to calibrate, e.g. BTC/USDT,ETH/USDT.",
+    )
+    parser.add_argument(
+        "--timeframe",
+        default=loaded_settings.trading.timeframe,
+        help="Timeframe label used for CSV discovery and reporting, e.g. 1m, 5m, 15m.",
     )
     parser.add_argument(
         "--csv",
@@ -879,13 +1183,19 @@ def build_arg_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--target-sweep",
-        default="25,50,75,100",
-        help="Comma-separated MIN_TARGET_MOVE_BPS sweep values.",
+        help=(
+            "Comma-separated MIN_TARGET_MOVE_BPS sweep values. "
+            f"Default: {format_float_list(DEFAULT_TARGET_SWEEP)}; "
+            f"with --realized-sweep: {format_float_list(DEFAULT_REALIZED_TARGET_SWEEP)}."
+        ),
     )
     parser.add_argument(
         "--reward-cost-sweep",
-        default="1.5,2.0,3.0",
-        help="Comma-separated reward/cost ratio sweep values.",
+        help=(
+            "Comma-separated reward/cost ratio sweep values. "
+            f"Default: {format_float_list(DEFAULT_REWARD_COST_SWEEP)}; "
+            f"with --realized-sweep: {format_float_list(DEFAULT_REALIZED_REWARD_COST_SWEEP)}."
+        ),
     )
     parser.add_argument(
         "--diagnostic-notional",
@@ -897,6 +1207,26 @@ def build_arg_parser() -> argparse.ArgumentParser:
         type=int,
         default=60,
         help="Maximum future candles used for calibration exit simulation.",
+    )
+    parser.add_argument(
+        "--realized-sweep",
+        action="store_true",
+        help="Run calibration-only realized optimization sweeps over thresholds, ATR exits, and max hold.",
+    )
+    parser.add_argument(
+        "--max-hold-sweep",
+        default=format_int_list(DEFAULT_REALIZED_MAX_HOLD_SWEEP),
+        help="Comma-separated max-hold candle values for --realized-sweep.",
+    )
+    parser.add_argument(
+        "--atr-tp-sweep",
+        default=format_float_list(DEFAULT_REALIZED_ATR_TP_SWEEP),
+        help="Comma-separated ATR take-profit multipliers for --realized-sweep.",
+    )
+    parser.add_argument(
+        "--atr-stop-sweep",
+        default=format_float_list(DEFAULT_REALIZED_ATR_STOP_SWEEP),
+        help="Comma-separated ATR stop-loss multipliers for --realized-sweep.",
     )
     parser.add_argument(
         "--self-test",
@@ -914,18 +1244,45 @@ def main() -> None:
         run_internal_self_test()
         print("calibration threshold self-test passed")
         return
+    target_sweep = parse_float_list(
+        args.target_sweep
+        or format_float_list(
+            DEFAULT_REALIZED_TARGET_SWEEP if args.realized_sweep else DEFAULT_TARGET_SWEEP
+        )
+    )
+    reward_cost_sweep = parse_float_list(
+        args.reward_cost_sweep
+        or format_float_list(
+            DEFAULT_REALIZED_REWARD_COST_SWEEP
+            if args.realized_sweep
+            else DEFAULT_REWARD_COST_SWEEP
+        )
+    )
     symbols = tuple(symbol.strip() for symbol in args.symbols.split(",") if symbol.strip())
     historical = load_historical_inputs(
         symbols=symbols,
         csv_mappings=args.csv,
         data_dir=args.data_dir,
-        timeframe=settings.trading.timeframe,
+        timeframe=args.timeframe,
         limit=args.limit,
     )
+    if args.realized_sweep:
+        optimizer = RealizedSweepOptimizer(
+            settings=settings,
+            timeframe=args.timeframe,
+            target_sweep=target_sweep,
+            reward_cost_sweep=reward_cost_sweep,
+            max_hold_sweep=parse_int_list(args.max_hold_sweep),
+            atr_tp_sweep=parse_float_list(args.atr_tp_sweep),
+            atr_stop_sweep=parse_float_list(args.atr_stop_sweep),
+            diagnostic_notional=args.diagnostic_notional,
+        )
+        print_realized_optimization_report(optimizer.run(historical))
+        return
     calibrator = HistoricalStrategyCalibrator(
         settings=settings,
-        target_sweep=parse_float_list(args.target_sweep),
-        reward_cost_sweep=parse_float_list(args.reward_cost_sweep),
+        target_sweep=target_sweep,
+        reward_cost_sweep=reward_cost_sweep,
         diagnostic_notional=args.diagnostic_notional,
         max_hold_candles=args.max_hold_candles,
     )
