@@ -23,6 +23,30 @@ DEFAULT_SYMBOL_FILTER = "BTC/USDT"
 DAILY_TRADE_TARGET = 100.0
 DAILY_RETURN_TARGET_PCT = 5.0
 MIN_ACCEPTABLE_PF = 1.1
+DISPLAY_LABELS = {
+    "achieved": "Achieved",
+    "not_achieved": "Not achieved",
+    "unrealistic_given_data": "Unrealistic",
+    "not_profitable_out_of_sample": "Failed OOS",
+    "not_profitable_frequency_target_not_met": "Too sparse",
+    "not_profitable_at_30_trades": "Not profitable",
+    "too_few_trades": "Too sparse",
+    "potentially_promising_needs_more_testing": "Promising / thin sample",
+    "robust_candidate": "Robust candidate",
+    "weak_overfit_risk": "Overfit risk",
+    "PROFITABLE_CANDIDATE": "Candidate",
+    "NOT_PROFITABLE": "Not profitable",
+    "NO_ACCEPTED_STRATEGY": "No accepted strategy",
+    "FEE_DRAG + LOW_EDGE": "Fee drag + weak edge",
+    "OUT_OF_SAMPLE_FAILURE": "Out-of-sample failure",
+    "OVERTRADING_FOR_QUALITY_PROFILE": "Overtrading for quality profile",
+    "TOO_FEW_HIGH_QUALITY_SETUPS": "Too few high-quality setups",
+    "LOW_TRADE_FREQUENCY": "Low trade frequency",
+    "full_3_year_dataset": "Full 3-year dataset",
+    "limited_30_day_dataset": "Limited 30-day dataset",
+    "partial_dataset": "Partial dataset",
+    "below_30_trades": "Below 30 trades",
+}
 
 
 @dataclass(frozen=True)
@@ -161,20 +185,8 @@ def render_dashboard(
   <link rel="stylesheet" href="assets/styles.css">
   <script src="assets/app.js" defer></script>
 </head>
-<body class="locked">
-  <div class="gate-overlay" id="gate-overlay" role="dialog" aria-modal="true" aria-labelledby="gate-title">
-    <div class="gate-panel">
-      <p class="eyebrow">Restricted research dashboard</p>
-      <h2 id="gate-title">Access Required</h2>
-      <p class="muted">Enter the dashboard passphrase to view local BTCUSDT research summaries.</p>
-      <div class="gate-form">
-        <input id="gate-input" type="password" autocomplete="current-password" placeholder="Password" aria-label="Dashboard password">
-        <button id="gate-button" type="button">Unlock</button>
-      </div>
-      <p class="gate-error" id="gate-error" aria-live="polite"></p>
-    </div>
-  </div>
-  <div id="research-shell" class="site-content" aria-hidden="true">
+<body>
+  <div id="research-shell" class="site-content">
   <header class="hero">
     <div class="shell hero-grid">
       <div>
@@ -184,14 +196,14 @@ def render_dashboard(
         <div class="status-strip">
           <span class="pill ok">Paper mode default</span>
           <span class="pill ok">Live trading disabled</span>
-          <span class="pill ok">No leverage</span>
+          <span class="pill ok">Simulated leverage only</span>
           <span class="pill ok">BTC-only default</span>
           <span class="pill warn">Backtesting only</span>
         </div>
       </div>
       <div class="hero-card">
         <span>Latest verdict</span>
-        <strong>{escape(text_value(latest_summary.get("verdict")))}</strong>
+        <strong>{escape(display_label(latest_summary.get("verdict")))}</strong>
         <small>Generated {escape(generated_at)}</small>
       </div>
     </div>
@@ -237,7 +249,7 @@ def render_dashboard(
           <p class="eyebrow">Latest run</p>
           <h2>BTC Compact Summary</h2>
         </div>
-        <span class="tag {verdict_class(latest_summary.get("verdict"))}">{escape(text_value(latest_summary.get("verdict")))}</span>
+        <span class="tag {verdict_class(latest_summary.get("verdict"))} verdict-badge">{escape(display_label(latest_summary.get("verdict")))}</span>
       </div>
       <div class="metric-grid">
         {metric_card("BTC records", str(len(records)), "neutral")}
@@ -247,7 +259,7 @@ def render_dashboard(
         {metric_card("Total candles", whole(latest_summary.get("total_candles")), "neutral")}
         {metric_card("Signal window", whole(latest_summary.get("signal_window_bars")), "neutral")}
         {metric_card("Data days", days(latest_summary.get("approx_days")), "neutral")}
-        {metric_card("Data coverage", text_value(latest_summary.get("data_coverage")), "good" if latest_summary.get("uses_full_3_year_dataset") else "warn")}
+        {metric_card("Data coverage", display_label(latest_summary.get("data_coverage")), "good" if latest_summary.get("uses_full_3_year_dataset") else "warn")}
       </div>
       {render_data_window(latest_summary)}
     </section>
@@ -258,7 +270,7 @@ def render_dashboard(
           <p class="eyebrow">Backtest period</p>
           <h2>Data Coverage</h2>
         </div>
-        <span class="tag {('good' if latest_summary.get("uses_full_3_year_dataset") else 'warn')}">{escape(text_value(latest_summary.get("data_coverage")))}</span>
+        <span class="tag {('good' if latest_summary.get("uses_full_3_year_dataset") else 'warn')} verdict-badge">{escape(display_label(latest_summary.get("data_coverage")))}</span>
       </div>
       {render_data_coverage_block(latest_summary)}
     </section>
@@ -269,7 +281,7 @@ def render_dashboard(
           <p class="eyebrow">Scalping targets</p>
           <h2>100 Trades/Day and 5% Daily Target</h2>
         </div>
-        <span class="tag {target_class(daily_metrics.get("verdict_100_trades_per_day"))}">{escape(text_value(daily_metrics.get("verdict_100_trades_per_day")))}</span>
+        <span class="tag {target_class(daily_metrics.get("verdict_100_trades_per_day"))} verdict-badge">{escape(display_label(daily_metrics.get("verdict_100_trades_per_day")))}</span>
       </div>
       {render_daily_target_tape(daily_metrics)}
       <p class="muted">Targets are research objectives only. The dashboard reports whether historical, fee-aware BTCUSDT tests achieved them; it does not claim future profitability.</p>
@@ -341,6 +353,16 @@ def render_dashboard(
     </section>
 
     <section class="panel span-6">
+      <h2>Market Regime Performance</h2>
+      {render_group_performance_block(latest_summary, "regime_performance")}
+    </section>
+
+    <section class="panel span-6">
+      <h2>Trading Session Performance</h2>
+      {render_group_performance_block(latest_summary, "session_performance")}
+    </section>
+
+    <section class="panel span-6">
       <h2>Daily PnL Distribution</h2>
       {render_daily_distribution_block(daily_metrics)}
     </section>
@@ -373,6 +395,11 @@ def render_dashboard(
     <section class="panel span-6">
       <h2>Walk-Forward Validation</h2>
       {render_walk_forward_block(latest_summary)}
+    </section>
+
+    <section class="panel span-6">
+      <h2>Strategy Interpretation</h2>
+      {render_strategy_interpretation(latest_summary)}
     </section>
 
     <section class="panel span-6">
@@ -497,12 +524,12 @@ def render_latest_row(record: SummaryRecord) -> str:
               <td>{number(summary.get("leverage_used"))}</td>
               <td>{escape(text_value(summary.get("liquidation_events")))}</td>
               <td>{number(summary.get("trades_per_day"))}</td>
-              <td>{escape(text_value(summary.get("verdict_5_to_20_trades_per_day")))}</td>
+              <td>{escape(display_label(summary.get("verdict_5_to_20_trades_per_day")))}</td>
               <td>{percent(summary.get("median_daily_return_pct"))}</td>
               <td>{percent(summary.get("fee_drag_pct"))}</td>
-              <td>{escape(text_value(summary.get("verdict_100_trades_per_day")))}</td>
-              <td>{escape(text_value(summary.get("verdict_5pct_daily_target")))}</td>
-              <td>{escape(text_value(summary.get("walk_forward_verdict")))}</td>
+              <td>{escape(display_label(summary.get("verdict_100_trades_per_day")))}</td>
+              <td>{escape(display_label(summary.get("verdict_5pct_daily_target")))}</td>
+              <td>{escape(display_label(summary.get("walk_forward_verdict")))}</td>
               <td>{escape(text_value(summary.get("reject_soft_late_momentum")))}</td>
               <td>{escape(text_value(summary.get("positive_combinations_with_at_least_30_trades")))}</td>
               <td>{escape(text_value(summary.get("combinations_in_frequency_band")))}</td>
@@ -551,7 +578,7 @@ def render_data_coverage_block(summary: dict[str, Any]) -> str:
         return '<p class="muted">No data coverage has been logged yet.</p>'
     warning = text_value(summary.get("data_coverage_warning"))
     rows = [
-        ("Backtest Period", text_value(summary.get("data_coverage"))),
+        ("Backtest Period", display_label(summary.get("data_coverage"))),
         ("Data Start", text_value(summary.get("data_start") or summary.get("data_period_start"))),
         ("Data End", text_value(summary.get("data_end") or summary.get("data_period_end"))),
         ("Calendar Days", days(summary.get("backtest_days") or summary.get("approx_days"))),
@@ -590,6 +617,37 @@ def render_macro_filter_block(summary: dict[str, Any]) -> str:
     ) + "</div>"
 
 
+def render_group_performance_block(summary: dict[str, Any], field: str) -> str:
+    rows = summary.get(field)
+    if not isinstance(rows, list) or not rows:
+        return '<p class="muted">No regime/session performance has been logged yet. Re-run BTC search with the latest backtester.</p>'
+    body = ""
+    for row in rows[:8]:
+        data = safe_dict(row)
+        if not data:
+            continue
+        body += (
+            "<tr>"
+            f"<td>{escape(text_value(data.get('label')))}</td>"
+            f"<td>{whole(data.get('trades'))}</td>"
+            f"<td>{money(data.get('net'))}</td>"
+            f"<td>{money(data.get('avg_net'))}</td>"
+            f"<td>{number(data.get('pf'))}</td>"
+            f"<td>{percent(data.get('win_rate'))}</td>"
+            f"<td>{percent(data.get('max_drawdown_pct'))}</td>"
+            f"<td>{percent(data.get('fee_drag_pct'))}</td>"
+            f"<td>{escape(display_label(data.get('sample_warning')))}</td>"
+            "</tr>"
+        )
+    if not body:
+        return '<p class="muted">No rows available.</p>'
+    return (
+        '<div class="table-wrap compact"><table><thead><tr>'
+        '<th>Bucket</th><th>Trades</th><th>Net</th><th>Avg</th><th>PF</th><th>Win</th><th>DD</th><th>Fee drag</th><th>Sample</th>'
+        f'</tr></thead><tbody>{body}</tbody></table></div>'
+    )
+
+
 def render_daily_target_tape(metrics: dict[str, Any]) -> str:
     if not metrics:
         metrics = {}
@@ -600,14 +658,14 @@ def render_daily_target_tape(metrics: dict[str, Any]) -> str:
             number(metrics.get("trades_per_day")),
             DAILY_TRADE_TARGET,
             to_float(metrics.get("trades_per_day")),
-            text_value(metrics.get("verdict_100_trades_per_day")),
+            display_label(metrics.get("verdict_100_trades_per_day")),
         )
         + target_card(
             "Median daily return",
             percent(metrics.get("median_daily_return_pct")),
             DAILY_RETURN_TARGET_PCT,
             to_float(metrics.get("median_daily_return_pct")),
-            text_value(metrics.get("verdict_5pct_daily_target")),
+            display_label(metrics.get("verdict_5pct_daily_target")),
         )
         + target_card(
             "Avg daily return",
@@ -911,6 +969,36 @@ def render_momentum_block(summary: dict[str, Any]) -> str:
     ) + "</div>"
 
 
+def render_strategy_interpretation(summary: dict[str, Any]) -> str:
+    row = safe_dict(summary.get("best_at_least_30")) or safe_dict(summary.get("best_overall"))
+    if not row:
+        return '<p class="muted">No accepted BTC candidate has been logged yet.</p>'
+    net = to_float(row.get("net")) or 0.0
+    pf = to_float(row.get("pf")) or 0.0
+    trades = int(to_float(row.get("trades")) or 0)
+    best_regime = safe_dict(summary.get("best_regime"))
+    best_session = safe_dict(summary.get("best_session"))
+    strength = (
+        f"Best logged pocket: {text_value(best_regime.get('label'))} / {text_value(best_session.get('label'))}"
+        if best_regime or best_session
+        else "No regime/session pocket has enough evidence yet"
+    )
+    weakness = "Net remains negative after costs" if net <= 0 else "Positive result is still sparse and needs more out-of-sample evidence"
+    if trades < 100:
+        weakness = "Trade sample is below 100, so robustness remains weak"
+    risk = "Overfit risk remains active" if summary.get("overfit_warning") else "Out-of-sample split did not flag overfit in this run"
+    if pf < MIN_ACCEPTABLE_PF:
+        risk = "PF is below the minimum acceptable threshold"
+    rows = [
+        ("Strength", strength),
+        ("Weakness", weakness),
+        ("Risk", risk),
+    ]
+    return '<div class="stacked">' + "".join(
+        f'<div><strong>{escape(label)}</strong><span>{escape(value)}</span></div>' for label, value in rows
+    ) + "</div>"
+
+
 def render_next_tasks(records: list[SummaryRecord]) -> str:
     tested = {
         timeframe
@@ -954,7 +1042,7 @@ def render_final_summary(summary: dict[str, Any]) -> str:
     rows = [
         ("SYSTEM STATUS", status),
         ("CORE METRICS", f"avg daily {percent(summary.get('avg_daily_return_pct'))} | PF {number(row.get('pf') if row else None)} | trades/day {number(summary.get('trades_per_day'))}"),
-        ("TARGET VERDICT", f"100/day {text_value(summary.get('verdict_100_trades_per_day'))} | 5% daily {text_value(summary.get('verdict_5pct_daily_target'))} | 5-20/day {text_value(summary.get('verdict_5_to_20_trades_per_day'))}"),
+        ("TARGET VERDICT", f"100/day {display_label(summary.get('verdict_100_trades_per_day'))} | 5% daily {display_label(summary.get('verdict_5pct_daily_target'))} | 5-20/day {display_label(summary.get('verdict_5_to_20_trades_per_day'))}"),
         ("MAIN FAILURE", issue),
         ("BEST STRATEGY", strategy),
         ("FINAL CONCLUSION", conclusion),
@@ -987,7 +1075,7 @@ def render_walk_forward_block(summary: dict[str, Any]) -> str:
         if isinstance(split, dict)
     )
     return (
-        f"<p class=\"muted\">Verdict: {escape(text_value(row.get('walk_forward_verdict')))}. "
+        f"<p class=\"muted\">Verdict: {escape(display_label(row.get('walk_forward_verdict')))}. "
         "This is a chronological train/validation/test split, not a rolling optimizer.</p>"
         '<div class="table-wrap compact"><table><thead><tr>'
         '<th>Split</th><th>Trades</th><th>Net</th><th>Avg</th><th>PF</th><th>Max DD</th>'
@@ -1035,7 +1123,7 @@ def render_strategy_leaderboard(rows: list[dict[str, Any]]) -> str:
             f"<td>{number(row.get('pf'))}</td>"
             f"<td>{percent(row.get('median_daily_return_pct'))}</td>"
             f"<td>{percent(row.get('fee_drag_pct'))}</td>"
-            f"<td>{escape(text_value(row.get('walk_forward_verdict')))}</td>"
+            f"<td>{verdict_tag(row.get('walk_forward_verdict'))}</td>"
             "</tr>"
         )
     return (
@@ -1057,7 +1145,7 @@ def metric_card(label: str, value: str, value_class: str = "neutral") -> str:
 def verdict_tag(value: Any) -> str:
     verdict = text_value(value)
     class_name = verdict_class(verdict)
-    return f'<span class="tag {class_name}">{escape(verdict)}</span>'
+    return f'<span class="tag {class_name} verdict-badge">{escape(display_label(verdict))}</span>'
 
 
 def verdict_class(value: Any) -> str:
@@ -1074,26 +1162,28 @@ def verdict_class(value: Any) -> str:
 def system_status(summary: dict[str, Any]) -> str:
     explicit = str(summary.get("system_status") or "")
     if explicit:
-        return explicit.replace("_", " ")
+        if explicit == "NOT_PROFITABLE":
+            return "NOT PROFITABLE - insufficient edge after fees"
+        return display_label(explicit)
     verdict = str(summary.get("verdict") or "")
     if "robust" in verdict or "promising" in verdict:
         return "RESEARCH CANDIDATE FOUND"
-    return "NOT PROFITABLE"
+    return "NOT PROFITABLE - insufficient edge after fees"
 
 
 def primary_failure_text(summary: dict[str, Any]) -> str:
     explicit = str(summary.get("primary_failure") or "")
     if explicit:
-        return explicit.replace("_", " ")
+        return display_label(explicit)
     reasons = summary.get("overfit_warning_reasons")
     if isinstance(reasons, list) and reasons:
-        joined = " + ".join(str(item).replace("_", " ") for item in reasons[:2])
-        return joined.upper()
-    return "FEE DRAG + LOW EDGE"
+        joined = " + ".join(display_label(item) for item in reasons[:2])
+        return joined
+    return "Fee drag + weak edge"
 
 
 def status_class(summary: dict[str, Any]) -> str:
-    status = system_status(summary)
+    status = system_status(summary).upper()
     if "CANDIDATE" in status:
         return "good"
     return "bad"
@@ -1175,7 +1265,7 @@ def timeframe_completion(records: list[SummaryRecord]) -> list[dict[str, str]]:
                 "days": days(summary.get("approx_days")),
                 "start": text_value(summary.get("data_start") or summary.get("data_period_start")),
                 "end": text_value(summary.get("data_end") or summary.get("data_period_end")),
-                "coverage": text_value(summary.get("data_coverage")),
+                "coverage": display_label(summary.get("data_coverage")),
                 "latest_run": latest.run_label if latest else "n/a",
                 "verdict": text_value(summary.get("verdict")),
             }
@@ -1423,6 +1513,17 @@ def percent(value: Any) -> str:
     if numeric is None:
         return "n/a"
     return f"{numeric:.2f}%"
+
+
+def display_label(value: Any) -> str:
+    text = text_value(value)
+    if text in DISPLAY_LABELS:
+        return DISPLAY_LABELS[text]
+    if text == "n/a":
+        return text
+    if "_" in text:
+        return text.replace("_", " ").capitalize()
+    return text
 
 
 def text_value(value: Any) -> str:

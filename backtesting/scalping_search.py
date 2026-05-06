@@ -95,6 +95,8 @@ class SearchTrade:
     position_notional: float
     target_bps: float
     stop_bps: float
+    market_regime: str = "unknown"
+    trading_session: str = "unknown"
     liquidation_event: bool = False
 
 
@@ -144,6 +146,10 @@ class SearchRow:
     verdict: str = "too_few_trades"
     failure_reasons: list[str] = field(default_factory=list)
     exit_reason_counts: dict[str, int] = field(default_factory=dict)
+    regime_performance: list[dict[str, Any]] = field(default_factory=list)
+    session_performance: list[dict[str, Any]] = field(default_factory=list)
+    best_regime: dict[str, Any] | None = None
+    best_session: dict[str, Any] | None = None
 
 
 @dataclass
@@ -284,7 +290,7 @@ def run_search(args: argparse.Namespace) -> dict[str, Any]:
     if args.quality_profile == "high_quality" and frequency_target["verdict"] != "achieved":
         summary_verdict = "not_profitable_frequency_target_not_met"
     summary = {
-        "summary_version": 6,
+        "summary_version": 7,
         "mode": f"fast_futures_{args.quality_profile}_search",
         "quality_profile": args.quality_profile,
         "target_trades_per_day_min": args.target_trades_per_day_min,
@@ -339,6 +345,10 @@ def run_search(args: argparse.Namespace) -> dict[str, Any]:
         "worst_overall": row_to_dict(worst),
         "agent_comparison": agent_comparison,
         "strategy_leaderboard": strategy_leaderboard,
+        "regime_performance": primary.regime_performance if primary else [],
+        "session_performance": primary.session_performance if primary else [],
+        "best_regime": primary.best_regime if primary else None,
+        "best_session": primary.best_session if primary else None,
         "agent_name": primary.agent_name if primary else "n/a",
         "strategy_name": primary.strategy if primary else "n/a",
         "trades_per_day": primary.trades_per_day if primary else 0.0,
@@ -938,6 +948,39 @@ def spaced_indices(indices: np.ndarray, spacing: int) -> np.ndarray:
     return np.asarray(selected, dtype=int)
 
 
+def classify_market_regime(arrays: FeatureArrays, index: int) -> str:
+    atr_pct = safe_float_at(arrays.atr_percentile, index)
+    trend_abs = abs(safe_float_at(arrays.trend_20_bps, index))
+    range_bps = safe_float_at(arrays.range_bps_20, index)
+    if atr_pct >= 0.80:
+        return "high_volatility"
+    if atr_pct <= 0.35:
+        return "low_volatility"
+    if trend_abs >= max(20.0, range_bps * 0.35):
+        return "trending"
+    return "ranging"
+
+
+def classify_session(hour_utc: float) -> str:
+    hour = int(hour_utc) if math.isfinite(hour_utc) else -1
+    if 0 <= hour <= 6:
+        return "Asia"
+    if 7 <= hour <= 11:
+        return "London"
+    if 12 <= hour <= 15:
+        return "London/NY overlap"
+    if 16 <= hour <= 20:
+        return "New York"
+    return "Off hours"
+
+
+def safe_float_at(values: np.ndarray, index: int, default: float = 0.0) -> float:
+    if index < 0 or index >= len(values):
+        return default
+    value = float(values[index])
+    return value if math.isfinite(value) else default
+
+
 def simulate_trade(
     index: int,
     spec: SearchSpec,
@@ -1039,6 +1082,8 @@ def simulate_trade(
         position_notional=float(position_notional),
         target_bps=float(target_bps),
         stop_bps=float(stop_bps),
+        market_regime=classify_market_regime(arrays, index),
+        trading_session=classify_session(safe_float_at(arrays.hour_utc, index)),
         liquidation_event=liquidation_event,
     )
 
@@ -1087,6 +1132,8 @@ def summarize_trades(
     )
     verdict = verdict_for(trades, sum(net_values), pf, overfit_warning, max_dd_pct)
     exit_counts = Counter(trade.exit_reason for trade in trades)
+    regime_performance = grouped_trade_performance(trades, "market_regime", diagnostic_notional)
+    session_performance = grouped_trade_performance(trades, "trading_session", diagnostic_notional)
     return SearchRow(
         symbol=symbol,
         timeframe=timeframe,
@@ -1132,6 +1179,10 @@ def summarize_trades(
         verdict=verdict,
         failure_reasons=failure_reasons,
         exit_reason_counts=dict(exit_counts),
+        regime_performance=regime_performance,
+        session_performance=session_performance,
+        best_regime=best_group_performance(regime_performance),
+        best_session=best_group_performance(session_performance),
     )
 
 
@@ -1202,6 +1253,80 @@ def split_stats(label: str, trades: list[SearchTrade]) -> dict[str, Any]:
         "win_rate": sum(1 for value in values if value > 0) / len(values) * 100 if values else 0.0,
         "max_drawdown": max_drawdown(values),
     }
+
+
+def grouped_trade_performance(
+    trades: list[SearchTrade],
+    attribute: str,
+    diagnostic_notional: float,
+) -> list[dict[str, Any]]:
+    buckets: dict[str, list[SearchTrade]] = defaultdict(list)
+    for trade in trades:
+        label = str(getattr(trade, attribute, "unknown") or "unknown")
+        buckets[label].append(trade)
+    rows: list[dict[str, Any]] = []
+    for label, bucket in sorted(buckets.items()):
+        values = [trade.net_pnl for trade in bucket]
+        gross_values = [trade.gross_pnl for trade in bucket]
+        profit = sum(value for value in values if value > 0)
+        loss = abs(sum(value for value in values if value < 0))
+        pf = None if profit <= 0 and loss <= 0 else (float("inf") if loss <= 0 else profit / loss)
+        costs = sum(trade.total_costs for trade in bucket)
+        net = sum(values)
+        rows.append(
+            {
+                "label": label,
+                "trades": len(bucket),
+                "wins": sum(1 for value in values if value > 0),
+                "losses": sum(1 for value in values if value <= 0),
+                "win_rate": sum(1 for value in values if value > 0) / len(bucket) * 100 if bucket else 0.0,
+                "gross": sum(gross_values),
+                "costs": costs,
+                "net": net,
+                "avg_net": net / len(bucket) if bucket else 0.0,
+                "expectancy": net / len(bucket) if bucket else 0.0,
+                "pf": pf,
+                "max_drawdown": max_drawdown(values),
+                "max_drawdown_pct": max_drawdown(values) / max(diagnostic_notional, 1e-9) * 100,
+                "fee_drag_pct": costs / max(diagnostic_notional, 1e-9) * 100,
+                "sample_warning": "below_30_trades" if len(bucket) < 30 else "",
+            }
+        )
+    return sorted(
+        rows,
+        key=lambda row: (
+            score_nullable(row.get("net")),
+            score_nullable(row.get("pf")),
+            score_nullable(row.get("expectancy")),
+            -score_nullable(row.get("max_drawdown_pct")),
+        ),
+        reverse=True,
+    )
+
+
+def best_group_performance(rows: list[dict[str, Any]]) -> dict[str, Any] | None:
+    eligible = [row for row in rows if int(row.get("trades") or 0) >= 5]
+    candidates = eligible or rows
+    return max(
+        candidates,
+        key=lambda row: (
+            score_nullable(row.get("net")),
+            score_nullable(row.get("pf")),
+            score_nullable(row.get("expectancy")),
+            score_nullable(row.get("trades")),
+        ),
+        default=None,
+    )
+
+
+def score_nullable(value: Any) -> float:
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError):
+        return float("-inf")
+    if not math.isfinite(numeric):
+        return 1e12 if numeric > 0 else float("-inf")
+    return numeric
 
 
 def failure_reasons_for(
@@ -1402,6 +1527,10 @@ def row_to_dict(row: SearchRow | None) -> dict[str, Any] | None:
         "verdict": row.verdict,
         "failure_reasons": row.failure_reasons,
         "exit_reason_counts": row.exit_reason_counts,
+        "regime_performance": row.regime_performance,
+        "session_performance": row.session_performance,
+        "best_regime": row.best_regime,
+        "best_session": row.best_session,
         "daily_metrics": daily_summary_dict(row),
     }
 
@@ -1571,6 +1700,8 @@ def print_report(result: dict[str, Any]) -> None:
     print(f"best_at_least_30={format_row(summary.get('best_at_least_30'))}")
     print(f"best_5_to_20_trades_per_day={format_row(summary.get('best_in_5_to_20_trades_per_day'))}")
     print(f"best_overall={format_row(summary.get('best_overall'))}")
+    print(f"best_regime={format_group(summary.get('best_regime'))}")
+    print(f"best_session={format_group(summary.get('best_session'))}")
     print(f"frequency_band_combinations={summary.get('combinations_in_frequency_band', 0)} positive_frequency_band_combinations={summary.get('positive_combinations_in_frequency_band', 0)}")
     print(f"target_100_trades_per_day={summary['target_a_100_trades_per_day']}")
     print(f"target_5_to_20_trades_per_day={summary['target_5_to_20_trades_per_day']}")
@@ -1593,6 +1724,16 @@ def format_row(row: dict[str, Any] | None) -> str:
         f"hold={row.get('hold', 'n/a')} trades={row.get('trades', 'n/a')} "
         f"tpd={float(row.get('trades_per_day') or 0):.2f} net=${float(row.get('net') or 0):.2f} "
         f"pf={format_pf(row.get('pf'))} verdict={row.get('verdict', 'n/a')}"
+    )
+
+
+def format_group(row: dict[str, Any] | None) -> str:
+    if not row:
+        return "n/a"
+    return (
+        f"{row.get('label', 'n/a')} trades={row.get('trades', 'n/a')} "
+        f"net=${float(row.get('net') or 0):.2f} avg=${float(row.get('avg_net') or 0):.2f} "
+        f"pf={format_pf(row.get('pf'))} dd={float(row.get('max_drawdown_pct') or 0):.2f}%"
     )
 
 

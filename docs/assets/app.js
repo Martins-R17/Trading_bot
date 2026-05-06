@@ -1,41 +1,4 @@
 (() => {
-  const gateSeed = "TGF0dmlhMTc=";
-  const gateKey = "btcResearchGate";
-  const shell = document.getElementById("research-shell");
-  const overlay = document.getElementById("gate-overlay");
-  const input = document.getElementById("gate-input");
-  const button = document.getElementById("gate-button");
-  const error = document.getElementById("gate-error");
-
-  const reveal = () => {
-    document.body.classList.remove("locked");
-    if (shell) shell.setAttribute("aria-hidden", "false");
-    if (overlay) overlay.setAttribute("aria-hidden", "true");
-  };
-
-  if (sessionStorage.getItem(gateKey) === "open") {
-    reveal();
-  } else if (button && input && error) {
-    const attempt = () => {
-      const expected = atob(gateSeed);
-      if (input.value === expected) {
-        sessionStorage.setItem(gateKey, "open");
-        reveal();
-        return;
-      }
-      error.textContent = "Incorrect passphrase.";
-      overlay?.classList.remove("shake");
-      void overlay?.offsetWidth;
-      overlay?.classList.add("shake");
-      input.select();
-    };
-    button.addEventListener("click", attempt);
-    input.addEventListener("keydown", (event) => {
-      if (event.key === "Enter") attempt();
-    });
-    input.focus();
-  }
-
   const numericValues = document.querySelectorAll("[data-count]");
 
   for (const node of numericValues) {
