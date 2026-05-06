@@ -121,6 +121,11 @@ def print_table(records: list[dict[str, Any]], path: Path, ignored_count: int = 
         ("Window", 7),
         ("Notional", 10),
         ("CalibNet", 10),
+        ("TPD", 8),
+        ("MedDay%", 9),
+        ("FeeDrag%", 9),
+        ("100/day", 16),
+        ("5%day", 16),
         ("WF", 24),
         ("SoftLate", 9),
         ("Total", 7),
@@ -143,6 +148,11 @@ def print_table(records: list[dict[str, Any]], path: Path, ignored_count: int = 
             str(summary.get("signal_window_bars", "n/a")),
             format_money(summary.get("diagnostic_notional")),
             format_money(summary.get("calibration_min_expected_net_profit")),
+            format_number(summary.get("trades_per_day")),
+            format_percent(summary.get("median_daily_return_pct")),
+            format_percent(summary.get("fee_drag_pct")),
+            truncate(str(summary.get("verdict_100_trades_per_day") or "n/a"), 16),
+            truncate(str(summary.get("verdict_5pct_daily_target") or "n/a"), 16),
             truncate(str(summary.get("walk_forward_verdict") or "n/a"), 24),
             truncate(str(summary.get("reject_soft_late_momentum") or "n/a"), 9),
             str(summary.get("total_combinations", "n/a")),
@@ -195,6 +205,13 @@ def format_number(value: Any) -> str:
     if number == float("inf"):
         return "inf"
     return f"{number:.2f}"
+
+
+def format_percent(value: Any) -> str:
+    number = to_float(value)
+    if number is None:
+        return "n/a"
+    return f"{number:.2f}%"
 
 
 def to_float(value: Any) -> float | None:

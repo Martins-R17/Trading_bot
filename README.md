@@ -56,6 +56,17 @@ tools\run_btc_1m_3y_backtest.bat --confirm-large-1m
 
 The 1m script is intentionally guarded because full 3-year 1m data is large.
 
+Scalping-focused aliases are also available:
+
+```bat
+tools\run_btc_scalping_15m.bat
+tools\run_btc_scalping_5m.bat
+tools\run_btc_scalping_1m.bat --confirm-large-1m
+tools\run_btc_scalping_suite.bat
+```
+
+The suite runs 15m and 5m only. Run 1m separately after runtime and strategy evidence justify it.
+
 ## Reporting
 
 Compare BTC-only compact logs:
@@ -76,11 +87,15 @@ Open:
 docs\index.html
 ```
 
+Dashboard metrics include diagnostic notional, calibration-only minimum expected net profit, trades/day, median daily return, profitable days, days above 5%, max daily drawdown, fee drag, walk-forward verdict, and compact best/worst candidates.
+
 ## Acceptance Criteria
 
 A candidate is not considered promising unless it has:
 
 - At least 30 trades, preferably 100+.
+- For high-frequency scalping research, a separate objective is 100+ trades/day. This is a target to measure, not a promise.
+- The 5% daily return target is reported as a diagnostic objective only and must be validated after fees, slippage, and walk-forward splits.
 - Positive realized net PnL after fees and slippage.
 - Profit factor above 1.1 minimum, preferably above 1.2.
 - Acceptable max drawdown.

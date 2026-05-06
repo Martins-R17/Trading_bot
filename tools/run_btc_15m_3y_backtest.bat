@@ -31,6 +31,7 @@ echo Running BTC 15m 3-year realized single-baseline test.
 echo Run label: %RUN_LABEL%
 echo Output file: %OUTPUT_FILE%
 echo This is calibration/backtesting only. No live trading, no orders, no leverage.
+echo Research targets: BTC-only, 100 trades/day objective, 5%% median daily return objective.
 
 ".\.venv\Scripts\python.exe" -m backtesting.calibration ^
   --symbols BTC/USDT ^

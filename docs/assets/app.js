@@ -27,4 +27,17 @@
 
     requestAnimationFrame(render);
   }
+
+  const progressBars = document.querySelectorAll("[data-progress] span");
+  for (const bar of progressBars) {
+    const parent = bar.parentElement;
+    const raw = parent ? parent.getAttribute("data-progress") : "";
+    const target = Number(raw);
+    if (!Number.isFinite(target)) continue;
+    bar.style.transform = "scaleX(0)";
+    requestAnimationFrame(() => {
+      bar.style.transition = "transform 700ms cubic-bezier(.2,.8,.2,1)";
+      bar.style.transform = `scaleX(${Math.max(0, Math.min(target, 100)) / 100})`;
+    });
+  }
 })();

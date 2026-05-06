@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import time
 from collections import Counter, defaultdict
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
@@ -370,11 +371,13 @@ class RealizedOptimizationRow:
     gross_loss: float = 0.0
     hold_candles_sum: int = 0
     max_drawdown: float = 0.0
+    candles_tested: int = 0
     exit_reason_counts: dict[str, int] = field(default_factory=dict)
     quality_rejection_counts: dict[str, int] = field(default_factory=dict)
     quality_rejected_losing_count: int = 0
     walk_forward_splits: list[dict[str, Any]] = field(default_factory=list)
     walk_forward_verdict: str = "n/a"
+    daily_metrics: dict[str, Any] = field(default_factory=dict)
 
     @property
     def win_rate(self) -> float:
@@ -447,6 +450,8 @@ class RealizedOptimizationResult:
     accepted_loser_clusters: list["AcceptedLoserCluster"] = field(default_factory=list)
     momentum_entry_clusters: list["MomentumEntryCluster"] = field(default_factory=list)
     momentum_entry_only_clusters: list["MomentumEntryOnlyCluster"] = field(default_factory=list)
+    elapsed_seconds: float = 0.0
+    strategy_evaluations_per_second: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -1501,8 +1506,10 @@ class RealizedSweepOptimizer:
         self.soft_close_position_low_short_sweep = soft_close_position_low_short_sweep or (self.quality_config.soft_close_position_low_short,)
 
     def run(self, historical_by_symbol: dict[str, pd.DataFrame]) -> RealizedOptimizationResult:
+        started = time.perf_counter()
         rows: list[RealizedOptimizationRow] = []
         all_trades: list[SimulationTrade] = []
+        strategy_evaluations = 0
         quality_rejection_counts: Counter[str] = Counter()
         quality_rejected_simulations: list[SimulationTrade] = []
         quality_rejected_losing_count = 0
@@ -1526,6 +1533,7 @@ class RealizedSweepOptimizer:
                 quality_config=config_quality,
             )
             result = calibrator.run(historical_by_symbol)
+            strategy_evaluations += sum(stats.candles_tested for stats in result.rows)
             all_trades.extend(result.simulation_trades)
             quality_rejection_counts.update(result.quality_rejection_counts)
             quality_rejected_losing_count += result.quality_rejected_losing_count
@@ -1547,6 +1555,7 @@ class RealizedSweepOptimizer:
             if self.calibration_min_expected_net_profit is not None
             else self.settings.risk.calibration_min_expected_net_profit_usd
         )
+        elapsed_seconds = max(time.perf_counter() - started, 0.0)
         return RealizedOptimizationResult(
             production_target_move_bps=self.settings.risk.min_target_move_bps,
             production_reward_cost_ratio=self.settings.risk.min_reward_to_cost_ratio,
@@ -1567,6 +1576,10 @@ class RealizedSweepOptimizer:
             accepted_loser_clusters=build_accepted_loser_clusters(all_trades, self.quality_config),
             momentum_entry_clusters=build_momentum_entry_clusters(all_trades),
             momentum_entry_only_clusters=build_momentum_entry_only_clusters(all_trades),
+            elapsed_seconds=elapsed_seconds,
+            strategy_evaluations_per_second=(
+                strategy_evaluations / elapsed_seconds if elapsed_seconds > 0 else 0.0
+            ),
         )
 
     def _configs(self) -> list[RealizedSweepConfig]:
@@ -1669,11 +1682,13 @@ class RealizedSweepOptimizer:
             gross_loss=gross_loss,
             hold_candles_sum=sum(trade.hold_candles for trade in sorted_trades),
             max_drawdown=self._max_drawdown(net_values),
+            candles_tested=stats.candles_tested,
             exit_reason_counts=dict(exit_counts),
             quality_rejection_counts=stats.quality_rejection_counts,
             quality_rejected_losing_count=stats.quality_rejected_losing_count,
             walk_forward_splits=self._walk_forward_splits(sorted_trades),
             walk_forward_verdict=self._walk_forward_verdict(sorted_trades),
+            daily_metrics=self._daily_metrics(sorted_trades),
         )
 
     def _max_drawdown(self, net_values: list[float]) -> float:
@@ -1753,6 +1768,102 @@ class RealizedSweepOptimizer:
         if all(float(pf) >= 1.1 for pf in profit_factors):
             return "promising_needs_more_testing"
         return "weak_overfit_risk"
+
+    def _daily_metrics(self, trades: list[SimulationTrade]) -> dict[str, Any]:
+        if not trades:
+            return empty_daily_metrics()
+        notional = max(
+            float(
+                self.diagnostic_notional
+                if self.diagnostic_notional is not None
+                else HistoricalStrategyCalibrator(self.settings)._default_diagnostic_notional()
+            ),
+            1e-9,
+        )
+        by_day: dict[str, list[SimulationTrade]] = defaultdict(list)
+        for trade in trades:
+            by_day[trade_day_key(trade.entry_timestamp)].append(trade)
+
+        daily_rows: list[dict[str, Any]] = []
+        for day, day_trades in sorted(by_day.items()):
+            sorted_day_trades = sorted(day_trades, key=lambda trade: (trade.entry_timestamp, trade.exit_timestamp))
+            net_values = [trade.realized_net_pnl for trade in sorted_day_trades]
+            gross_values = [trade.realized_gross_pnl for trade in sorted_day_trades]
+            costs = sum(trade.total_costs for trade in sorted_day_trades)
+            net = sum(net_values)
+            gross = sum(gross_values)
+            gross_profit = sum(value for value in net_values if value > 0)
+            gross_loss = abs(sum(value for value in net_values if value < 0))
+            profit_factor = None
+            if gross_loss <= 0:
+                profit_factor = None if gross_profit <= 0 else float("inf")
+            else:
+                profit_factor = gross_profit / gross_loss
+            daily_rows.append(
+                {
+                    "day": day,
+                    "trades": len(sorted_day_trades),
+                    "wins": sum(1 for value in net_values if value > 0),
+                    "losses": sum(1 for value in net_values if value <= 0),
+                    "win_rate": (
+                        sum(1 for value in net_values if value > 0) / len(sorted_day_trades) * 100
+                        if sorted_day_trades
+                        else 0.0
+                    ),
+                    "gross": gross,
+                    "costs": costs,
+                    "net": net,
+                    "return_pct": net / notional * 100,
+                    "fee_drag_pct": costs / notional * 100,
+                    "pf": profit_factor,
+                    "max_drawdown_pct": self._max_drawdown(net_values) / notional * 100,
+                }
+            )
+
+        returns = [float(row["return_pct"]) for row in daily_rows]
+        trades_per_day_values = [int(row["trades"]) for row in daily_rows]
+        fee_drag_values = [float(row["fee_drag_pct"]) for row in daily_rows]
+        max_daily_drawdown_pct = max((float(row["max_drawdown_pct"]) for row in daily_rows), default=0.0)
+        days = len(daily_rows)
+        avg_daily_return_pct = mean_value(returns)
+        median_daily_return_pct = median_value(returns)
+        days_profitable_pct = sum(1 for value in returns if value > 0) / days * 100 if days else 0.0
+        days_above_5pct = sum(1 for value in returns if value >= 5.0)
+        trades_per_day = len(trades) / days if days else 0.0
+        total_net = sum(float(row["net"]) for row in daily_rows)
+        total_profit_factor = profit_factor_from_values([trade.realized_net_pnl for trade in trades])
+        target_100 = (
+            "achieved"
+            if trades_per_day >= 100 and total_net > 0 and total_profit_factor is not None and total_profit_factor >= 1.1
+            else "not achieved yet"
+        )
+        target_5pct = (
+            "achieved"
+            if median_daily_return_pct >= 5.0 and days_profitable_pct >= 50 and total_net > 0
+            else "not achieved yet"
+        )
+        return {
+            "days": days,
+            "trades_per_day": trades_per_day,
+            "max_trades_per_day": max(trades_per_day_values) if trades_per_day_values else 0,
+            "avg_daily_return_pct": avg_daily_return_pct,
+            "median_daily_return_pct": median_daily_return_pct,
+            "best_daily_return_pct": max(returns) if returns else 0.0,
+            "worst_daily_return_pct": min(returns) if returns else 0.0,
+            "daily_return_pct_values": returns,
+            "daily_trade_counts": trades_per_day_values,
+            "daily_fee_drag_pct_values": fee_drag_values,
+            "days_profitable_pct": days_profitable_pct,
+            "days_above_5pct": days_above_5pct,
+            "days_above_5pct_pct": days_above_5pct / days * 100 if days else 0.0,
+            "max_daily_drawdown_pct": max_daily_drawdown_pct,
+            "fee_drag_pct": mean_value(fee_drag_values),
+            "total_fee_drag_pct": sum(fee_drag_values),
+            "verdict_100_trades_per_day": target_100,
+            "verdict_5pct_daily_target": target_5pct,
+            "best_day": max(daily_rows, key=lambda row: float(row["return_pct"]), default=None),
+            "worst_day": min(daily_rows, key=lambda row: float(row["return_pct"]), default=None),
+        }
 
     def _losing_examples(self, trades: list[SimulationTrade]) -> list[SimulationTrade]:
         return sorted(
@@ -1857,6 +1968,16 @@ def timestamp_to_utc(value: float | None) -> str:
         return "n/a"
 
 
+def trade_day_key(value: float | None) -> str:
+    if value is None:
+        return "n/a"
+    seconds = value / 1000 if abs(value) > 10_000_000_000 else value
+    try:
+        return datetime.fromtimestamp(seconds, tz=timezone.utc).date().isoformat()
+    except (OSError, OverflowError, ValueError):
+        return "n/a"
+
+
 def approximate_days(start: float | None, end: float | None) -> float | None:
     if start is None or end is None:
         return None
@@ -1875,6 +1996,50 @@ def split_sequence(items: list[Any], parts: int) -> list[list[Any]]:
         items[round(index * size / parts) : round((index + 1) * size / parts)]
         for index in range(parts)
     ]
+
+
+def mean_value(values: list[float]) -> float:
+    return sum(values) / len(values) if values else 0.0
+
+
+def median_value(values: list[float]) -> float:
+    if not values:
+        return 0.0
+    ordered = sorted(values)
+    midpoint = len(ordered) // 2
+    if len(ordered) % 2:
+        return ordered[midpoint]
+    return (ordered[midpoint - 1] + ordered[midpoint]) / 2
+
+
+def profit_factor_from_values(values: list[float]) -> float | None:
+    gross_profit = sum(value for value in values if value > 0)
+    gross_loss = abs(sum(value for value in values if value < 0))
+    if gross_loss <= 0:
+        return None if gross_profit <= 0 else float("inf")
+    return gross_profit / gross_loss
+
+
+def empty_daily_metrics() -> dict[str, Any]:
+    return {
+        "days": 0,
+        "trades_per_day": 0.0,
+        "max_trades_per_day": 0,
+        "avg_daily_return_pct": 0.0,
+        "median_daily_return_pct": 0.0,
+        "best_daily_return_pct": 0.0,
+        "worst_daily_return_pct": 0.0,
+        "days_profitable_pct": 0.0,
+        "days_above_5pct": 0,
+        "days_above_5pct_pct": 0.0,
+        "max_daily_drawdown_pct": 0.0,
+        "fee_drag_pct": 0.0,
+        "total_fee_drag_pct": 0.0,
+        "verdict_100_trades_per_day": "not achieved yet",
+        "verdict_5pct_daily_target": "not achieved yet",
+        "best_day": None,
+        "worst_day": None,
+    }
 
 
 def parse_csv_mappings(items: list[str]) -> dict[str, Path]:
@@ -2213,6 +2378,8 @@ def print_compact_realized_sweep_summary(result: RealizedOptimizationResult) -> 
     print(f"symbols={','.join(summary['symbols']) if summary['symbols'] else 'n/a'}")
     print(f"timeframes={','.join(summary['timeframes']) if summary['timeframes'] else 'n/a'}")
     print(f"total_candles={summary['total_candles']}")
+    print(f"elapsed_seconds={summary['elapsed_seconds']:.2f}")
+    print(f"strategy_evaluations_per_second={summary['strategy_evaluations_per_second']:.2f}")
     print(f"data_period_start={summary['data_period_start']}")
     print(f"data_period_end={summary['data_period_end']}")
     approx_days = summary.get("approx_days")
@@ -2227,6 +2394,18 @@ def print_compact_realized_sweep_summary(result: RealizedOptimizationResult) -> 
     )
     print(f"best_overall={format_compact_row_summary(summary['best_overall'])}")
     print(f"best_at_least_30={format_compact_row_summary(summary['best_at_least_30'])}")
+    print(f"daily_scalping_metrics={format_daily_scalping_metrics(summary['daily_scalping_metrics'])}")
+    print(f"trades_per_day={summary['trades_per_day']:.2f}")
+    print(f"avg_daily_return_pct={summary['avg_daily_return_pct']:.3f}%")
+    print(f"median_daily_return_pct={summary['median_daily_return_pct']:.3f}%")
+    print(f"best_daily_return_pct={summary['best_daily_return_pct']:.3f}%")
+    print(f"worst_daily_return_pct={summary['worst_daily_return_pct']:.3f}%")
+    print(f"days_profitable_pct={summary['days_profitable_pct']:.1f}%")
+    print(f"days_above_5pct={summary['days_above_5pct']}")
+    print(f"max_daily_drawdown_pct={summary['max_daily_drawdown_pct']:.3f}%")
+    print(f"fee_drag_pct={summary['fee_drag_pct']:.3f}%")
+    print(f"verdict_100_trades_per_day={summary['verdict_100_trades_per_day']}")
+    print(f"verdict_5pct_daily_target={summary['verdict_5pct_daily_target']}")
     print(f"walk_forward_verdict={summary['walk_forward_verdict']}")
     print(f"overfit_warning={summary['overfit_warning']}")
     print(f"worst_overall={format_compact_row_summary(summary['worst_overall'])}")
@@ -2272,8 +2451,14 @@ def build_compact_realized_sweep_summary(result: RealizedOptimizationResult) -> 
         key=lambda row: (row.net_pnl, row.average_net_per_trade),
         default=None,
     )
+    primary_row = best_at_least_30 or best_overall
+    period_daily_metrics = compact_period_daily_metrics(
+        primary_row,
+        approx_days=data_summary["approx_days"],
+        diagnostic_notional=result.diagnostic_notional,
+    )
     return {
-        "summary_version": 3,
+        "summary_version": 4,
         "diagnostic_notional": result.diagnostic_notional,
         "signal_window_bars": result.signal_window_bars,
         "simulate_rejected_quality": "enabled" if result.simulate_rejected_quality else "disabled",
@@ -2285,6 +2470,10 @@ def build_compact_realized_sweep_summary(result: RealizedOptimizationResult) -> 
         "symbols": data_summary["symbols"],
         "timeframes": data_summary["timeframes"],
         "total_candles": data_summary["total_candles"],
+        "candle_count": data_summary["total_candles"],
+        "data_years": data_summary["data_years"],
+        "elapsed_seconds": result.elapsed_seconds,
+        "strategy_evaluations_per_second": result.strategy_evaluations_per_second,
         "data_period_start": data_summary["data_period_start"],
         "data_period_end": data_summary["data_period_end"],
         "approx_days": data_summary["approx_days"],
@@ -2297,6 +2486,20 @@ def build_compact_realized_sweep_summary(result: RealizedOptimizationResult) -> 
         ),
         "best_overall": compact_realized_row_data(best_overall),
         "best_at_least_30": compact_realized_row_data(best_at_least_30),
+        "daily_scalping_metrics": period_daily_metrics,
+        "trades_per_day": period_daily_metrics["trades_per_day"],
+        "avg_daily_return_pct": period_daily_metrics["avg_daily_return_pct"],
+        "median_daily_return_pct": period_daily_metrics["median_daily_return_pct"],
+        "best_daily_return_pct": period_daily_metrics["best_daily_return_pct"],
+        "worst_daily_return_pct": period_daily_metrics["worst_daily_return_pct"],
+        "days_profitable_pct": period_daily_metrics["days_profitable_pct"],
+        "days_above_5pct": period_daily_metrics["days_above_5pct"],
+        "max_daily_drawdown_pct": period_daily_metrics["max_daily_drawdown_pct"],
+        "fee_drag_pct": period_daily_metrics["fee_drag_pct"],
+        "verdict_100_trades_per_day": period_daily_metrics["verdict_100_trades_per_day"],
+        "verdict_5pct_daily_target": period_daily_metrics["verdict_5pct_daily_target"],
+        "strategy_name": primary_row.strategy_name if primary_row else "n/a",
+        "timeframe": primary_row.timeframe if primary_row else (data_summary["timeframes"][0] if data_summary["timeframes"] else "n/a"),
         "walk_forward_verdict": best_at_least_30.walk_forward_verdict if best_at_least_30 else "too_few_trades",
         "overfit_warning": compact_overfit_warning(best_at_least_30),
         "worst_overall": compact_realized_row_data(worst_overall),
@@ -2353,6 +2556,7 @@ def compact_data_summary(profiles: list[dict[str, Any]]) -> dict[str, Any]:
         "data_period_start": min(starts) if starts else "n/a",
         "data_period_end": max(ends) if ends else "n/a",
         "approx_days": min(day_values) if day_values else None,
+        "data_years": (min(day_values) / 365.25) if day_values else None,
         "btc_only": bool(symbols) and all(symbol == "BTC/USDT" for symbol in symbols),
     }
 
@@ -2371,7 +2575,131 @@ def append_realized_summary_log(
     }
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a", encoding="utf-8") as handle:
-        handle.write(json.dumps(record, sort_keys=True) + "\n")
+        handle.write(json.dumps(json_safe(record), sort_keys=True, allow_nan=False) + "\n")
+
+
+def compact_period_daily_metrics(
+    row: RealizedOptimizationRow | None,
+    approx_days: float | None,
+    diagnostic_notional: float,
+) -> dict[str, Any]:
+    if row is None:
+        metrics = empty_daily_metrics()
+        metrics.update(
+            {
+                "basis": "full_data_period_including_zero_trade_days",
+                "calendar_days": int(round(approx_days or 0)),
+                "active_trade_days": 0,
+            }
+        )
+        return metrics
+
+    active = row.daily_metrics or empty_daily_metrics()
+    active_days = int(active.get("days") or 0)
+    calendar_days = max(active_days, int(round(approx_days or active_days or 0)))
+    if calendar_days <= 0:
+        calendar_days = active_days or 1
+    zero_trade_days = max(calendar_days - active_days, 0)
+    notional = max(float(diagnostic_notional), 1e-9)
+    profit_factor = row.profit_factor
+    active_profitable_days = int(round(float(active.get("days_profitable_pct") or 0.0) * active_days / 100))
+    days_above_5pct = int(active.get("days_above_5pct") or 0)
+    active_returns = daily_return_values(active)
+    calendar_returns = active_returns + [0.0] * zero_trade_days
+    median_daily_return_pct = median_value(calendar_returns)
+    best_active = float(active.get("best_daily_return_pct") or 0.0)
+    worst_active = float(active.get("worst_daily_return_pct") or 0.0)
+    best_daily_return_pct = max(best_active, 0.0) if zero_trade_days else best_active
+    worst_daily_return_pct = min(worst_active, 0.0) if zero_trade_days else worst_active
+    trades_per_day = row.trades / calendar_days
+    avg_daily_return_pct = row.net_pnl / notional / calendar_days * 100
+    days_profitable_pct = active_profitable_days / calendar_days * 100
+    days_above_5pct_pct = days_above_5pct / calendar_days * 100
+    fee_drag_pct = row.costs / notional / calendar_days * 100
+    verdict_100 = (
+        "achieved"
+        if trades_per_day >= 100 and row.net_pnl > 0 and profit_factor is not None and profit_factor >= 1.1
+        else "not achieved yet"
+    )
+    verdict_5pct = (
+        "achieved"
+        if median_daily_return_pct >= 5.0
+        and days_profitable_pct >= 50.0
+        and row.net_pnl > 0
+        and profit_factor is not None
+        and profit_factor >= 1.1
+        else "not achieved yet"
+    )
+    return {
+        "basis": "full_data_period_including_zero_trade_days",
+        "calendar_days": calendar_days,
+        "active_trade_days": active_days,
+        "zero_trade_days": zero_trade_days,
+        "trades_per_day": trades_per_day,
+        "max_trades_per_day": int(active.get("max_trades_per_day") or 0),
+        "avg_daily_return_pct": avg_daily_return_pct,
+        "median_daily_return_pct": median_daily_return_pct,
+        "best_daily_return_pct": best_daily_return_pct,
+        "worst_daily_return_pct": worst_daily_return_pct,
+        "days_profitable_pct": days_profitable_pct,
+        "days_above_5pct": days_above_5pct,
+        "days_above_5pct_pct": days_above_5pct_pct,
+        "max_daily_drawdown_pct": float(active.get("max_daily_drawdown_pct") or 0.0),
+        "fee_drag_pct": fee_drag_pct,
+        "total_fee_drag_pct": row.costs / notional * 100,
+        "verdict_100_trades_per_day": verdict_100,
+        "verdict_5pct_daily_target": verdict_5pct,
+        "trade_day_metrics": active,
+    }
+
+
+def daily_return_values(metrics: dict[str, Any]) -> list[float]:
+    raw_values = metrics.get("daily_return_pct_values")
+    if isinstance(raw_values, list):
+        return [
+            number
+            for number in (finite_float(value) for value in raw_values)
+            if number is not None
+        ]
+
+    values: list[float] = []
+    for key in ("best_day", "worst_day"):
+        day = safe_mapping(metrics.get(key))
+        value = finite_float(day.get("return_pct"))
+        if value is not None:
+            values.append(value)
+    days = int(metrics.get("days") or 0)
+    active_median = finite_float(metrics.get("median_daily_return_pct"))
+    if active_median is not None:
+        while len(values) < days:
+            values.append(active_median)
+    return values[:days]
+
+
+def json_safe(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {str(key): json_safe(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [json_safe(item) for item in value]
+    if isinstance(value, tuple):
+        return [json_safe(item) for item in value]
+    if isinstance(value, float):
+        return value if value == value and value not in {float("inf"), float("-inf")} else None
+    return value
+
+
+def safe_mapping(value: Any) -> dict[str, Any]:
+    return value if isinstance(value, dict) else {}
+
+
+def finite_float(value: Any) -> float | None:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    if number != number or number in {float("inf"), float("-inf")}:
+        return None
+    return number
 
 
 def compact_realized_row_data(row: RealizedOptimizationRow | None) -> dict[str, Any] | None:
@@ -2380,6 +2708,7 @@ def compact_realized_row_data(row: RealizedOptimizationRow | None) -> dict[str, 
     return {
         "symbol": row.symbol,
         "strategy": row.strategy_name,
+        "timeframe": row.timeframe,
         "target_bps": row.min_target_move_bps,
         "reward_cost": row.min_reward_cost_ratio,
         "hold": row.max_hold_candles,
@@ -2395,6 +2724,8 @@ def compact_realized_row_data(row: RealizedOptimizationRow | None) -> dict[str, 
         "avg_net": row.average_net_per_trade,
         "pf": row.profit_factor,
         "max_drawdown": row.max_drawdown,
+        "candles_tested": row.candles_tested,
+        "daily_metrics": row.daily_metrics,
         "stop_loss_hit_rate": row.stop_loss_hit_rate,
         "take_profit_hit_rate": row.take_profit_hit_rate,
         "max_horizon_exit_rate": row.max_horizon_exit_rate,
@@ -2453,6 +2784,23 @@ def format_compact_row_summary(row: dict[str, Any] | None) -> str:
         f"trades={row['trades']} net=${row['net']:.2f} avg_net=${row['avg_net']:.2f} "
         f"pf={format_profit_factor(row['pf'])} "
         f"{format_compact_threshold_summary(row['soft_thresholds'])}"
+    )
+
+
+def format_daily_scalping_metrics(metrics: dict[str, Any] | None) -> str:
+    if not metrics:
+        return "n/a"
+    return (
+        f"basis={metrics.get('basis', 'trade_days_only')} "
+        f"days={metrics.get('calendar_days', metrics.get('days', 'n/a'))} "
+        f"active_trade_days={metrics.get('active_trade_days', metrics.get('days', 'n/a'))} "
+        f"trades_per_day={float(metrics.get('trades_per_day') or 0.0):.2f} "
+        f"avg_daily_return={float(metrics.get('avg_daily_return_pct') or 0.0):.3f}% "
+        f"median_daily_return={float(metrics.get('median_daily_return_pct') or 0.0):.3f}% "
+        f"profitable_days={float(metrics.get('days_profitable_pct') or 0.0):.1f}% "
+        f"days_above_5pct={int(metrics.get('days_above_5pct') or 0)} "
+        f"max_daily_dd={float(metrics.get('max_daily_drawdown_pct') or 0.0):.3f}% "
+        f"fee_drag={float(metrics.get('fee_drag_pct') or 0.0):.3f}%"
     )
 
 

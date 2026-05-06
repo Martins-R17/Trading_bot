@@ -20,6 +20,9 @@ DEFAULT_LOG_PATH = Path("data/backtest_logs/realized_sweep_summary.jsonl")
 DEFAULT_OUTPUT_PATH = Path("docs/index.html")
 LATEST_LIMIT = 10
 DEFAULT_SYMBOL_FILTER = "BTC/USDT"
+DAILY_TRADE_TARGET = 100.0
+DAILY_RETURN_TARGET_PCT = 5.0
+MIN_ACCEPTABLE_PF = 1.1
 
 
 @dataclass(frozen=True)
@@ -144,6 +147,8 @@ def render_dashboard(
     tf_rows = timeframe_rows(records)
     tf_completion = timeframe_completion(records)
     strategy_rows = strategy_rows_from_records(records)
+    leaderboard_rows = scalping_leaderboard_rows(records)
+    daily_metrics = daily_metrics_from_summary(latest_summary)
     legacy_records = len(all_records) - len(records)
 
     return f"""<!doctype html>
@@ -218,6 +223,18 @@ def render_dashboard(
       {render_data_window(latest_summary)}
     </section>
 
+    <section class="panel span-12 terminal-panel">
+      <div class="section-head">
+        <div>
+          <p class="eyebrow">Scalping targets</p>
+          <h2>100 Trades/Day and 5% Daily Target</h2>
+        </div>
+        <span class="tag {target_class(daily_metrics.get("verdict_100_trades_per_day"))}">{escape(text_value(daily_metrics.get("verdict_100_trades_per_day")))}</span>
+      </div>
+      {render_daily_target_tape(daily_metrics)}
+      <p class="muted">Targets are research objectives only. The dashboard reports whether historical, fee-aware BTCUSDT tests achieved them; it does not claim future profitability.</p>
+    </section>
+
     <section class="panel span-12">
       <div class="section-head">
         <div>
@@ -239,17 +256,17 @@ def render_dashboard(
     </section>
 
     <section class="panel span-4">
-      <h2>Best Overall</h2>
+      <h2>Aggregate Best Overall</h2>
       {render_result_box(best_overall)}
     </section>
 
     <section class="panel span-4">
-      <h2>Best With 30+ Trades</h2>
+      <h2>Aggregate Best With 30+ Trades</h2>
       {render_result_box(best_30)}
     </section>
 
     <section class="panel span-4">
-      <h2>Worst Overall</h2>
+      <h2>Aggregate Worst Overall</h2>
       {render_result_box(worst_overall)}
     </section>
 
@@ -259,13 +276,23 @@ def render_dashboard(
     </section>
 
     <section class="panel span-6">
-      <h2>Strategy Comparison</h2>
-      {render_rank_table(strategy_rows, ("Strategy", "Rows", "Best net", "Best PF", "Best 30+"))}
+      <h2>Strategy Leaderboard</h2>
+      {render_strategy_leaderboard(leaderboard_rows)}
     </section>
 
     <section class="panel span-6">
-      <h2>Performance Summary</h2>
+      <h2>Latest Run Performance Summary</h2>
       {render_performance_table(latest_summary)}
+    </section>
+
+    <section class="panel span-6">
+      <h2>Fee / Slippage Drag</h2>
+      {render_fee_drag_block(latest_summary)}
+    </section>
+
+    <section class="panel span-6">
+      <h2>Daily PnL Distribution</h2>
+      {render_daily_distribution_block(daily_metrics)}
     </section>
 
     <section class="panel span-6">
@@ -360,6 +387,11 @@ def render_latest_table(records: list[SummaryRecord]) -> str:
               <th>Candles</th>
               <th>Notional</th>
               <th>Calib min net</th>
+              <th>Trades/day</th>
+              <th>Median day</th>
+              <th>Fee drag</th>
+              <th>100/day</th>
+              <th>5% day</th>
               <th>WF verdict</th>
               <th>Soft late</th>
               <th>Pos 30+</th>
@@ -384,6 +416,11 @@ def render_latest_row(record: SummaryRecord) -> str:
               <td>{escape(whole(summary.get("total_candles")))}</td>
               <td>{money(summary.get("diagnostic_notional"))}</td>
               <td>{money(summary.get("calibration_min_expected_net_profit"))}</td>
+              <td>{number(summary.get("trades_per_day"))}</td>
+              <td>{percent(summary.get("median_daily_return_pct"))}</td>
+              <td>{percent(summary.get("fee_drag_pct"))}</td>
+              <td>{escape(text_value(summary.get("verdict_100_trades_per_day")))}</td>
+              <td>{escape(text_value(summary.get("verdict_5pct_daily_target")))}</td>
               <td>{escape(text_value(summary.get("walk_forward_verdict")))}</td>
               <td>{escape(text_value(summary.get("reject_soft_late_momentum")))}</td>
               <td>{escape(text_value(summary.get("positive_combinations_with_at_least_30_trades")))}</td>
@@ -406,6 +443,127 @@ def render_data_window(summary: dict[str, Any]) -> str:
         f'<span>Production reward/cost: {number(summary.get("production_min_reward_cost_ratio"))}x</span>'
         "</div>"
     )
+
+
+def render_daily_target_tape(metrics: dict[str, Any]) -> str:
+    if not metrics:
+        metrics = {}
+    return (
+        '<div class="target-tape">'
+        + target_card(
+            "Trades/day",
+            number(metrics.get("trades_per_day")),
+            DAILY_TRADE_TARGET,
+            to_float(metrics.get("trades_per_day")),
+            text_value(metrics.get("verdict_100_trades_per_day")),
+        )
+        + target_card(
+            "Median daily return",
+            percent(metrics.get("median_daily_return_pct")),
+            DAILY_RETURN_TARGET_PCT,
+            to_float(metrics.get("median_daily_return_pct")),
+            text_value(metrics.get("verdict_5pct_daily_target")),
+        )
+        + target_card(
+            "Avg daily return",
+            percent(metrics.get("avg_daily_return_pct")),
+            DAILY_RETURN_TARGET_PCT,
+            to_float(metrics.get("avg_daily_return_pct")),
+            "research metric",
+        )
+        + target_card(
+            "Profitable days",
+            percent(metrics.get("days_profitable_pct")),
+            50.0,
+            to_float(metrics.get("days_profitable_pct")),
+            "calendar basis",
+        )
+        + target_card(
+            "Days above 5%",
+            whole(metrics.get("days_above_5pct")),
+            1.0,
+            to_float(metrics.get("days_above_5pct")),
+            "count",
+        )
+        + target_card(
+            "Max daily drawdown",
+            percent(metrics.get("max_daily_drawdown_pct")),
+            0.0,
+            abs(to_float(metrics.get("max_daily_drawdown_pct")) or 0.0),
+            "lower is better",
+            inverse=True,
+        )
+        + target_card(
+            "Fee drag/day",
+            percent(metrics.get("fee_drag_pct")),
+            0.0,
+            to_float(metrics.get("fee_drag_pct")),
+            "cost visibility",
+            inverse=True,
+        )
+        + "</div>"
+    )
+
+
+def target_card(
+    label: str,
+    value: str,
+    target: float,
+    numeric_value: float | None,
+    verdict: str,
+    inverse: bool = False,
+) -> str:
+    numeric = numeric_value if numeric_value is not None else 0.0
+    progress = 100.0 if target <= 0 and numeric <= 0 else min(abs(numeric) / max(abs(target), 1e-9) * 100, 100.0)
+    state = target_class(verdict)
+    if inverse:
+        state = "good" if numeric <= target else "warn"
+    return f"""
+        <div class="target-card">
+          <div class="label">{escape(label)}</div>
+          <div class="target-value {state}">{escape(value)}</div>
+          <div class="progress" data-progress="{progress:.2f}"><span></span></div>
+          <small>{escape(verdict)}</small>
+        </div>"""
+
+
+def render_fee_drag_block(summary: dict[str, Any]) -> str:
+    row = safe_dict(summary.get("best_at_least_30")) or safe_dict(summary.get("best_overall"))
+    if not row:
+        return '<p class="muted">No realized candidate available yet.</p>'
+    gross = abs(to_float(row.get("gross")) or 0.0)
+    costs = to_float(row.get("costs")) or 0.0
+    trades = int(to_float(row.get("trades")) or 0)
+    cost_per_trade = costs / trades if trades else None
+    cost_vs_gross = costs / gross * 100 if gross else None
+    return (
+        '<div class="metric-grid">'
+        f'{metric_card("Gross PnL", money(row.get("gross")), "neutral")}'
+        f'{metric_card("Costs", money(row.get("costs")), "warn")}'
+        f'{metric_card("Net PnL", money(row.get("net")), "bad" if (to_float(row.get("net")) or 0) < 0 else "good")}'
+        f'{metric_card("Cost/trade", money(cost_per_trade), "warn")}'
+        f'{metric_card("Costs/gross", percent(cost_vs_gross), "warn")}'
+        f'{metric_card("Fee drag/day", percent(summary.get("fee_drag_pct")), "warn")}'
+        '</div>'
+    )
+
+
+def render_daily_distribution_block(metrics: dict[str, Any]) -> str:
+    if not metrics:
+        return '<p class="muted">Daily metrics are not present in this log. Re-run calibration with the latest code.</p>'
+    rows = [
+        ("Basis", text_value(metrics.get("basis"))),
+        ("Calendar days", whole(metrics.get("calendar_days"))),
+        ("Active trade days", whole(metrics.get("active_trade_days"))),
+        ("Zero-trade days", whole(metrics.get("zero_trade_days"))),
+        ("Best daily return", percent(metrics.get("best_daily_return_pct"))),
+        ("Worst daily return", percent(metrics.get("worst_daily_return_pct"))),
+        ("Days profitable", percent(metrics.get("days_profitable_pct"))),
+        ("Days above 5%", whole(metrics.get("days_above_5pct"))),
+    ]
+    return '<div class="stacked">' + "".join(
+        f'<div><strong>{escape(label)}</strong><span>{escape(value)}</span></div>' for label, value in rows
+    ) + "</div>"
 
 
 def render_timeframe_completion(rows: list[dict[str, Any]]) -> str:
@@ -594,6 +752,33 @@ def render_rank_table(rows: list[tuple[str, str, str, str, str]], headings: tupl
     return f'<div class="table-wrap compact"><table><thead><tr>{header}</tr></thead><tbody>{body}</tbody></table></div>'
 
 
+def render_strategy_leaderboard(rows: list[dict[str, Any]]) -> str:
+    if not rows:
+        return '<p class="muted">No BTC-only strategy rows yet.</p>'
+    body = ""
+    for index, row in enumerate(rows[:12], start=1):
+        body += (
+            "<tr>"
+            f"<td><span class=\"rank\">{index}</span></td>"
+            f"<td>{escape(text_value(row.get('timeframe')))}</td>"
+            f"<td>{escape(text_value(row.get('strategy')))}</td>"
+            f"<td>{whole(row.get('trades'))}</td>"
+            f"<td>{number(row.get('trades_per_day'))}</td>"
+            f"<td>{money(row.get('net'))}</td>"
+            f"<td>{number(row.get('pf'))}</td>"
+            f"<td>{percent(row.get('median_daily_return_pct'))}</td>"
+            f"<td>{percent(row.get('fee_drag_pct'))}</td>"
+            f"<td>{escape(text_value(row.get('walk_forward_verdict')))}</td>"
+            "</tr>"
+        )
+    return (
+        '<div class="table-wrap compact"><table class="leaderboard"><thead><tr>'
+        '<th>#</th><th>Tf</th><th>Strategy</th><th>Trades</th><th>TPD</th>'
+        '<th>Net</th><th>PF</th><th>Med day</th><th>Fee drag</th><th>WF</th>'
+        f'</tr></thead><tbody>{body}</tbody></table></div>'
+    )
+
+
 def metric_card(label: str, value: str, value_class: str = "neutral") -> str:
     return f"""
         <div class="metric">
@@ -619,11 +804,23 @@ def verdict_class(value: Any) -> str:
     return "neutral"
 
 
+def target_class(value: Any) -> str:
+    verdict = str(value or "")
+    if verdict == "achieved":
+        return "good"
+    if "not achieved" in verdict:
+        return "warn"
+    return verdict_class(verdict)
+
+
 def best_row(records: list[SummaryRecord], field: str) -> dict[str, Any] | None:
     rows = [row for row in (safe_dict(record.summary.get(field)) for record in records) if row]
     return max(
         rows,
-        key=lambda row: (to_float(row.get("net")) or float("-inf"), to_float(row.get("avg_net")) or float("-inf")),
+        key=lambda row: (
+            score_float(row.get("net"), missing=float("-inf")),
+            score_float(row.get("avg_net"), missing=float("-inf")),
+        ),
         default=None,
     )
 
@@ -632,7 +829,10 @@ def worst_row(records: list[SummaryRecord], field: str) -> dict[str, Any] | None
     rows = [row for row in (safe_dict(record.summary.get(field)) for record in records) if row]
     return min(
         rows,
-        key=lambda row: (to_float(row.get("net")) or float("inf"), to_float(row.get("avg_net")) or float("inf")),
+        key=lambda row: (
+            score_float(row.get("net"), missing=float("inf")),
+            score_float(row.get("avg_net"), missing=float("inf")),
+        ),
         default=None,
     )
 
@@ -693,17 +893,85 @@ def strategy_rows_from_records(records: list[SummaryRecord]) -> list[tuple[str, 
                 buckets.setdefault(strategy, []).append(row)
     rows: list[tuple[str, str, str, str, str]] = []
     for strategy, result_rows in sorted(buckets.items()):
-        best = max(result_rows, key=lambda row: to_float(row.get("net")) or float("-inf"), default=None)
+        best = max(result_rows, key=lambda row: score_float(row.get("net"), missing=float("-inf")), default=None)
         best_30_rows = [row for row in result_rows if int(to_float(row.get("trades")) or 0) >= 30]
-        best_30 = max(best_30_rows, key=lambda row: to_float(row.get("net")) or float("-inf"), default=None)
+        best_30 = max(best_30_rows, key=lambda row: score_float(row.get("net"), missing=float("-inf")), default=None)
         rows.append((strategy, str(len(result_rows)), money(best.get("net") if best else None), number(best.get("pf") if best else None), format_row(best_30)))
     return rows
+
+
+def scalping_leaderboard_rows(records: list[SummaryRecord]) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    seen: set[tuple[str, str, str, str, str, str]] = set()
+    for record in records:
+        for field in ("best_at_least_30", "best_overall"):
+            row = safe_dict(record.summary.get(field))
+            if not row:
+                continue
+            daily = daily_metrics_from_summary(record.summary, row)
+            leaderboard_row = {
+                "run_label": record.run_label,
+                "timeframe": row.get("timeframe") or format_list(record.summary.get("timeframes")),
+                "strategy": row.get("strategy"),
+                "trades": row.get("trades"),
+                "trades_per_day": daily.get("trades_per_day"),
+                "net": row.get("net"),
+                "pf": row.get("pf"),
+                "median_daily_return_pct": daily.get("median_daily_return_pct"),
+                "fee_drag_pct": daily.get("fee_drag_pct"),
+                "walk_forward_verdict": row.get("walk_forward_verdict") or record.summary.get("walk_forward_verdict"),
+            }
+            dedupe_key = (
+                str(leaderboard_row["run_label"]),
+                str(leaderboard_row["timeframe"]),
+                str(leaderboard_row["strategy"]),
+                str(leaderboard_row["trades"]),
+                str(leaderboard_row["net"]),
+                str(leaderboard_row["pf"]),
+            )
+            if dedupe_key in seen:
+                continue
+            seen.add(dedupe_key)
+            rows.append(leaderboard_row)
+    return sorted(
+        rows,
+        key=lambda row: (
+            target_score(row.get("trades_per_day"), DAILY_TRADE_TARGET),
+            score_float(row.get("net"), missing=float("-inf")),
+            score_float(row.get("pf"), missing=0.0),
+            -score_float(row.get("fee_drag_pct"), missing=0.0),
+        ),
+        reverse=True,
+    )
+
+
+def daily_metrics_from_summary(summary: dict[str, Any], row: dict[str, Any] | None = None) -> dict[str, Any]:
+    if row:
+        row_metrics = safe_dict(row.get("daily_metrics"))
+        if row_metrics:
+            return row_metrics
+    metrics = safe_dict(summary.get("daily_scalping_metrics"))
+    if metrics:
+        return metrics
+    return {}
+
+
+def target_score(value: Any, target: float) -> float:
+    numeric = to_float(value)
+    if numeric is None:
+        return 0.0
+    return min(numeric / max(target, 1e-9), 1.0)
+
+
+def score_float(value: Any, missing: float) -> float:
+    numeric = to_float(value)
+    return missing if numeric is None else numeric
 
 
 def best_summary_row(summaries: list[dict[str, Any]], field: str) -> dict[str, Any] | None:
     rows = [safe_dict(summary.get(field)) for summary in summaries]
     rows = [row for row in rows if row]
-    return max(rows, key=lambda row: to_float(row.get("net")) or float("-inf"), default=None)
+    return max(rows, key=lambda row: score_float(row.get("net"), missing=float("-inf")), default=None)
 
 
 def count_values(records: list[SummaryRecord], field: str) -> dict[str, int]:
@@ -822,6 +1090,13 @@ def days(value: Any) -> str:
     if numeric is None:
         return "n/a"
     return f"{numeric:,.1f}"
+
+
+def percent(value: Any) -> str:
+    numeric = to_float(value)
+    if numeric is None:
+        return "n/a"
+    return f"{numeric:.2f}%"
 
 
 def text_value(value: Any) -> str:

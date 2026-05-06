@@ -12,6 +12,8 @@
   --gold-soft: rgba(216, 180, 93, 0.12);
   --green: #67d49b;
   --green-soft: rgba(103, 212, 155, 0.13);
+  --cyan: #58d7ff;
+  --cyan-soft: rgba(88, 215, 255, 0.12);
   --red: #ff847c;
   --red-soft: rgba(255, 132, 124, 0.13);
   --amber: #f5bf6b;
@@ -184,6 +186,13 @@ a {
   animation: rise 540ms ease forwards;
 }
 
+.terminal-panel {
+  background:
+    linear-gradient(180deg, rgba(88, 215, 255, 0.055), transparent 150px),
+    linear-gradient(180deg, rgba(255, 255, 255, 0.035), transparent 120px),
+    var(--panel);
+}
+
 .span-12 {
   grid-column: span 12;
 }
@@ -259,6 +268,58 @@ h3 {
   word-break: break-word;
 }
 
+.target-tape {
+  display: grid;
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.target-card {
+  min-height: 126px;
+  display: grid;
+  align-content: center;
+  gap: 8px;
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background:
+    linear-gradient(180deg, rgba(88, 215, 255, 0.06), transparent),
+    rgba(255, 255, 255, 0.035);
+}
+
+.target-card .label {
+  color: var(--muted);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.target-value {
+  font-size: 22px;
+  font-weight: 800;
+}
+
+.progress {
+  width: 100%;
+  height: 6px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.progress span {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, var(--gold), var(--cyan), var(--green));
+  transform-origin: left center;
+}
+
+.target-card small {
+  color: var(--muted);
+}
+
 .value.good {
   color: var(--green);
 }
@@ -320,6 +381,24 @@ th {
   background: rgba(216, 180, 93, 0.09);
   color: #efe1bd;
   font-weight: 780;
+}
+
+.leaderboard th {
+  color: #dff7ff;
+  background: rgba(88, 215, 255, 0.09);
+}
+
+.rank {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border: 1px solid rgba(88, 215, 255, 0.38);
+  border-radius: 999px;
+  color: var(--cyan);
+  background: var(--cyan-soft);
+  font-weight: 800;
 }
 
 tr:last-child td {
@@ -420,6 +499,7 @@ li + li {
 
   .metric-grid,
   .metric-grid.five,
+  .target-tape,
   .data-window {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
@@ -441,6 +521,7 @@ li + li {
 
   .metric-grid,
   .metric-grid.five,
+  .target-tape,
   .data-window {
     grid-template-columns: 1fr;
   }
