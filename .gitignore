@@ -1,7 +1,13 @@
 __pycache__/
 *.pyc
 .env
+.venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
 data/historical/*.csv
 data/historical*/
+data/historical_*/
+data/historical_3y_*/
 data/backtest_logs/
 data/*.txt

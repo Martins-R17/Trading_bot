@@ -1,0 +1,270 @@
+:root {
+  color-scheme: light;
+  --bg: #f5f7fb;
+  --panel: #ffffff;
+  --panel-soft: #f9fbfe;
+  --ink: #182230;
+  --muted: #65758b;
+  --line: #d9e1ec;
+  --accent: #2563eb;
+  --accent-soft: #dbeafe;
+  --ok: #067647;
+  --warn: #b54708;
+  --bad: #b42318;
+  --shadow: 0 18px 50px rgba(24, 34, 48, 0.08);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--ink);
+  font-family: Inter, "Segoe UI", Arial, sans-serif;
+  line-height: 1.5;
+}
+
+a {
+  color: var(--accent);
+}
+
+.shell {
+  width: min(1180px, calc(100% - 32px));
+  margin: 0 auto;
+}
+
+.hero {
+  background: #0f172a;
+  color: #f8fafc;
+  padding: 42px 0 36px;
+  border-bottom: 1px solid #1e293b;
+}
+
+.hero h1 {
+  margin: 0 0 8px;
+  font-size: clamp(30px, 5vw, 52px);
+  line-height: 1.05;
+}
+
+.hero p {
+  margin: 0;
+  max-width: 860px;
+  color: #cbd5e1;
+  font-size: 17px;
+}
+
+.status-strip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 24px;
+}
+
+.pill {
+  display: inline-flex;
+  align-items: center;
+  min-height: 32px;
+  padding: 5px 11px;
+  border-radius: 999px;
+  background: #1e293b;
+  color: #e2e8f0;
+  border: 1px solid #334155;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.pill.ok {
+  background: rgba(6, 118, 71, 0.16);
+  border-color: rgba(6, 118, 71, 0.42);
+  color: #bbf7d0;
+}
+
+.pill.warn {
+  background: rgba(181, 71, 8, 0.16);
+  border-color: rgba(181, 71, 8, 0.42);
+  color: #fed7aa;
+}
+
+.grid {
+  display: grid;
+  grid-template-columns: repeat(12, 1fr);
+  gap: 18px;
+  padding: 24px 0 42px;
+}
+
+.panel {
+  grid-column: span 12;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  box-shadow: var(--shadow);
+  padding: 22px;
+}
+
+.panel.half {
+  grid-column: span 6;
+}
+
+.panel.third {
+  grid-column: span 4;
+}
+
+.panel h2 {
+  margin: 0 0 14px;
+  font-size: 20px;
+}
+
+.panel h3 {
+  margin: 16px 0 8px;
+  font-size: 15px;
+}
+
+.muted {
+  color: var(--muted);
+}
+
+.metric-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.metric {
+  background: var(--panel-soft);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 14px;
+}
+
+.metric .label {
+  color: var(--muted);
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.metric .value {
+  margin-top: 5px;
+  font-size: 22px;
+  font-weight: 700;
+}
+
+.value.good {
+  color: var(--ok);
+}
+
+.value.bad {
+  color: var(--bad);
+}
+
+.value.warn {
+  color: var(--warn);
+}
+
+.table-wrap {
+  overflow-x: auto;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+  min-width: 880px;
+  background: #fff;
+}
+
+th,
+td {
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--line);
+  text-align: left;
+  vertical-align: top;
+  font-size: 13px;
+}
+
+th {
+  background: #eef3fb;
+  color: #334155;
+  font-weight: 700;
+}
+
+tr:last-child td {
+  border-bottom: 0;
+}
+
+.result-line {
+  display: grid;
+  gap: 4px;
+}
+
+.tag {
+  display: inline-block;
+  padding: 2px 7px;
+  border-radius: 999px;
+  background: var(--accent-soft);
+  color: #1d4ed8;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.tag.bad {
+  background: #fee4e2;
+  color: var(--bad);
+}
+
+.tag.good {
+  background: #dcfce7;
+  color: var(--ok);
+}
+
+.code {
+  font-family: Consolas, "Liberation Mono", monospace;
+  font-size: 13px;
+  background: #eef3fb;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 10px 12px;
+  overflow-x: auto;
+}
+
+ul.clean {
+  margin: 0;
+  padding-left: 18px;
+}
+
+.notice {
+  border-left: 4px solid var(--warn);
+  background: #fff7ed;
+  padding: 12px 14px;
+  border-radius: 6px;
+}
+
+.footer {
+  padding: 20px 0 34px;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+@media (max-width: 900px) {
+  .panel.half,
+  .panel.third {
+    grid-column: span 12;
+  }
+
+  .metric-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 560px) {
+  .shell {
+    width: min(100% - 22px, 1180px);
+  }
+
+  .metric-grid {
+    grid-template-columns: 1fr;
+  }
+}

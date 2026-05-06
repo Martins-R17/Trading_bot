@@ -1,0 +1,239 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Trading Bot Research Dashboard</title>
+  <link rel="stylesheet" href="assets/styles.css">
+</head>
+<body>
+  <header class="hero">
+    <div class="shell">
+      <h1>Trading Bot Research Dashboard</h1>
+      <p>Local calibration and backtest dashboard for the Binance crypto paper trading bot. This page contains compact summaries only and is safe for GitHub Pages review.</p>
+      <div class="status-strip">
+        <span class="pill ok">Paper mode default</span>
+        <span class="pill ok">Live trading disabled</span>
+        <span class="pill ok">No leverage workflow</span>
+        <span class="pill warn">Research/backtesting only</span>
+      </div>
+    </div>
+  </header>
+
+  <main class="shell grid">
+    <section class="panel">
+      <h2>Current Focus</h2>
+      <p>Improve calibration diagnostics, compare realized sweep summaries, and determine whether any backtest-only quality filters produce robust 30+ trade results before promotion to paper execution is considered.</p>
+      <div class="notice">This dashboard is not financial advice. Results are historical research diagnostics and may not predict future performance.</div>
+    </section>
+
+    <section class="panel">
+      <h2>Run Overview</h2>
+      <div class="metric-grid">
+        
+        <div class="metric">
+          <div class="label">Summary records</div>
+          <div class="value">4</div>
+        </div>
+        
+        <div class="metric">
+          <div class="label">Latest notional</div>
+          <div class="value">$100.00</div>
+        </div>
+        
+        <div class="metric">
+          <div class="label">Latest verdict</div>
+          <div class="value warn">too_few_trades</div>
+        </div>
+        
+        <div class="metric">
+          <div class="label">Generated</div>
+          <div class="value">2026-05-06 02:43:07 UTC</div>
+        </div>
+      </div>
+      <p class="muted">Source log: data\backtest_logs\realized_sweep_summary.jsonl. Raw JSONL logs remain local and ignored by git.</p>
+    </section>
+
+    <section class="panel">
+      <h2>Latest Compact Backtest Summaries</h2>
+      
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Run label</th>
+              <th>Timestamp</th>
+              <th>Notional</th>
+              <th>Soft late</th>
+              <th>Total</th>
+              <th>Pos</th>
+              <th>Pos 30+</th>
+              <th>Best overall</th>
+              <th>Best 30+</th>
+              <th>Verdict</th>
+            </tr>
+          </thead>
+          <tbody>
+            
+            <tr>
+              <td>soft_thresholds_focused</td>
+              <td>2026-05-06T01:17:48.194536+00:00</td>
+              <td>n/a</td>
+              <td>enabled</td>
+              <td>48</td>
+              <td>16</td>
+              <td>0</td>
+              <td>ETH/USDT breakout target=75.00bps hold=16 trades=9 net=$17.34 avg=$1.93 pf=1.24</td>
+              <td>ETH/USDT momentum target=75.00bps hold=16 trades=30 net=$-85.50 avg=$-2.85 pf=0.74</td>
+              <td><span class="tag bad">not_profitable_at_30_trades</span></td>
+            </tr>
+
+            <tr>
+              <td>baseline_focused_no_soft_reject</td>
+              <td>2026-05-06T01:19:40.940955+00:00</td>
+              <td>n/a</td>
+              <td>disabled</td>
+              <td>3</td>
+              <td>1</td>
+              <td>0</td>
+              <td>ETH/USDT breakout target=75.00bps hold=16 trades=9 net=$17.34 avg=$1.93 pf=1.24</td>
+              <td>ETH/USDT momentum target=75.00bps hold=16 trades=32 net=$-114.94 avg=$-3.59 pf=0.68</td>
+              <td><span class="tag bad">not_profitable_at_30_trades</span></td>
+            </tr>
+
+            <tr>
+              <td>momentum_diagnostics_focused</td>
+              <td>2026-05-06T01:33:54.584918+00:00</td>
+              <td>n/a</td>
+              <td>enabled</td>
+              <td>48</td>
+              <td>16</td>
+              <td>0</td>
+              <td>ETH/USDT breakout target=75.00bps hold=16 trades=9 net=$17.34 avg=$1.93 pf=1.24</td>
+              <td>ETH/USDT momentum target=75.00bps hold=16 trades=30 net=$-85.50 avg=$-2.85 pf=0.74</td>
+              <td><span class="tag bad">not_profitable_at_30_trades</span></td>
+            </tr>
+
+            <tr>
+              <td>entry_momentum_diagnostics_100_notional</td>
+              <td>2026-05-06T01:51:57.848184+00:00</td>
+              <td>$100.00</td>
+              <td>enabled</td>
+              <td>48</td>
+              <td>16</td>
+              <td>0</td>
+              <td>ETH/USDT breakout target=75.00bps hold=16 trades=6 net=$0.84 avg=$0.14 pf=1.42</td>
+              <td>n/a</td>
+              <td><span class="tag warn">too_few_trades</span></td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+    </section>
+
+    <section class="panel third">
+      <h2>Best Overall</h2>
+      
+      <div class="result-line">
+        <strong>ETH/USDT breakout</strong>
+        <span>Trades: 9 | Net: $17.34 | Avg: $1.93 | PF: 1.24</span>
+        <span>Target: 75.00bps | Reward/cost: 3.00x | Hold: 16</span>
+        <span>ATR TP: 3.00 | ATR SL: 1.50</span>
+        <span>soft thresholds: long_rsi=67.00, long_close=0.80, short_rsi=33.00, short_close=0.20</span>
+      </div>
+
+    </section>
+
+    <section class="panel third">
+      <h2>Best With 30+ Trades</h2>
+      
+      <div class="result-line">
+        <strong>ETH/USDT momentum</strong>
+        <span>Trades: 30 | Net: $-85.50 | Avg: $-2.85 | PF: 0.74</span>
+        <span>Target: 75.00bps | Reward/cost: 3.00x | Hold: 16</span>
+        <span>ATR TP: 3.00 | ATR SL: 1.50</span>
+        <span>soft thresholds: long_rsi=67.00, long_close=0.90, short_rsi=33.00, short_close=0.30</span>
+      </div>
+
+    </section>
+
+    <section class="panel third">
+      <h2>Worst Overall</h2>
+      
+      <div class="result-line">
+        <strong>ETH/USDT momentum</strong>
+        <span>Trades: 31 | Net: $-145.08 | Avg: $-4.68 | PF: 0.60</span>
+        <span>Target: 75.00bps | Reward/cost: 3.00x | Hold: 16</span>
+        <span>ATR TP: 3.00 | ATR SL: 1.50</span>
+        <span>soft thresholds: long_rsi=67.00, long_close=0.80, short_rsi=33.00, short_close=0.20</span>
+      </div>
+
+    </section>
+
+    <section class="panel half">
+      <h2>Latest Quality Diagnostics</h2>
+      <h3>Top quality rejections</h3><ul class="clean"><li>volume_expansion_not_confirmed: 1984</li><li>extreme_rsi_short: 496</li><li>extreme_rsi_long: 480</li><li>bearish_close_not_confirmed: 432</li><li>exhausted_short: 376</li><li>bullish_close_not_confirmed: 368</li><li>volatility_expansion_not_confirmed: 368</li><li>exhausted_long: 340</li></ul>
+<h3>Top accepted loser cluster</h3><p>sell momentum exit=stop_loss_hit count=16 net=$-17.19 rsi=32-36 close=0.10-0.25 hold=11-20 label=none</p>
+<h3>Momentum side summary</h3><p>Buy: trades=236 net=$5.12 avg=$0.02 pf=1.06<br>Sell: trades=68 net=$-64.47 avg=$-0.95 pf=0.00</p>
+<h3>Best entry-only momentum cluster at 30+</h3><p>buy trades=32 net=$-3.62 avg=$-0.11 pf=0.55 rsi=55-64 macd=pos_strong trend=strong_extended close=0.75-0.90</p>
+    </section>
+
+    <section class="panel half">
+      <h2>Verdicts</h2>
+      <ul class="clean"><li>not_profitable_at_30_trades: 3</li><li>too_few_trades: 1</li></ul>
+    </section>
+
+    <section class="panel half">
+      <h2>Known Issues</h2>
+      <ul class="clean">
+        <li>Realized historical simulations have not produced robust profitable 30+ trade settings yet.</li>
+        <li>Momentum sells have been weaker than buys in recent diagnostics.</li>
+        <li>Fixed dollar expected-net thresholds can over-filter small diagnostic notional runs.</li>
+        <li>Raw result text files, raw JSONL logs, and historical CSVs must remain local and ignored.</li>
+      </ul>
+    </section>
+
+    <section class="panel half">
+      <h2>Future Tasks</h2>
+      <ul class="clean">
+        <li>Review a calibration-only expected-net threshold that scales with diagnostic notional.</li>
+        <li>Compare soft-late threshold sweeps with at least 30 trades.</li>
+        <li>Study entry-only momentum clusters before promoting any filter.</li>
+        <li>Test longer history in order: 15m first, then 5m, then 1m.</li>
+      </ul>
+    </section>
+
+    <section class="panel half">
+      <h2>Ideas Backlog</h2>
+      <ul class="clean">
+        <li>Add chart snapshots from compact summaries only.</li>
+        <li>Add per-run notes without exposing raw logs.</li>
+        <li>Track BTC-only default behavior separately from explicit manual ETH backtests.</li>
+        <li>Separate production thresholds from calibration diagnostics in reports.</li>
+      </ul>
+    </section>
+
+    <section class="panel half">
+      <h2>Local Workflow</h2>
+      <div class="code">tools\run_focused_backtest.bat<br>tools\compare_logs.bat<br>tools\update_dashboard.bat<br>tools\safe_git_status.bat</div>
+      <p class="muted">The backtest helper writes ignored local files under data/. The dashboard generator reads compact JSONL summaries and updates docs/index.html.</p>
+    </section>
+
+    <section class="panel">
+      <h2>GitHub Workflow</h2>
+      <ol>
+        <li>Run local backtests manually with the helper script.</li>
+        <li>Regenerate the dashboard locally.</li>
+        <li>Review changed files with <span class="code">tools\safe_git_status.bat</span>.</li>
+        <li>Commit only code and docs. Keep data/*.txt, data/backtest_logs/, historical CSVs, .env, .venv, and caches local.</li>
+        <li>Push only after explicit approval.</li>
+      </ol>
+    </section>
+  </main>
+
+  <footer class="shell footer">
+    Generated at 2026-05-06 02:43:07 UTC from compact local summary records only.
+  </footer>
+</body>
+</html>
