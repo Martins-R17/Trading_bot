@@ -38,20 +38,24 @@
       </div>
       <div class="hero-card">
         <span>Latest verdict</span>
-        <strong>not_profitable_out_of_sample</strong>
-        <small>Generated 2026-05-06 17:46:13 UTC</small>
+        <strong>not_profitable_frequency_target_not_met</strong>
+        <small>Generated 2026-05-06 18:14:57 UTC</small>
       </div>
     </div>
   </header>
 
   <main class="shell layout">
+    <section class="panel span-12 quick-summary-panel">
+      <div class="quick-summary"><span>Quick glance</span><strong>NOT PROFITABLE | PF: 2.01 | 0.00%/day | 0.05 trades/day | Issue: TOO FEW HIGH QUALITY SETUPS</strong></div>
+    </section>
+
     <section class="panel span-12 system-status-panel">
       <div class="section-head">
         <div>
           <p class="eyebrow">Executive Summary</p>
           <h2>SYSTEM STATUS: NOT PROFITABLE</h2>
         </div>
-        <span class="tag bad">PRIMARY FAILURE: OUT OF SAMPLE FAILURE</span>
+        <span class="tag bad">PRIMARY FAILURE: TOO FEW HIGH QUALITY SETUPS</span>
       </div>
       <p class="muted">Targets are evaluated only from historical, fee-aware, slippage-aware BTCUSDT research summaries. If a target is not supported out-of-sample, the dashboard marks it as not achieved or unrealistic given data.</p>
     </section>
@@ -65,27 +69,27 @@
         <span class="tag neutral">Not financial advice</span>
       </div>
       <div class="metric-grid five">
-        
+
         <div class="metric">
           <div class="label">Mode</div>
           <div class="value good" data-count="">Paper default</div>
         </div>
-        
+
         <div class="metric">
           <div class="label">Live trading</div>
           <div class="value good" data-count="">Disabled</div>
         </div>
-        
+
         <div class="metric">
           <div class="label">Leverage</div>
           <div class="value good" data-count="">None</div>
         </div>
-        
+
         <div class="metric">
           <div class="label">Universe</div>
           <div class="value good" data-count="">BTC/USDT futures</div>
         </div>
-        
+
         <div class="metric">
           <div class="label">Timeframes</div>
           <div class="value neutral" data-count="">1m / 5m / 15m</div>
@@ -100,46 +104,62 @@
           <p class="eyebrow">Latest run</p>
           <h2>BTC Compact Summary</h2>
         </div>
-        <span class="tag bad">not_profitable_out_of_sample</span>
+        <span class="tag bad">not_profitable_frequency_target_not_met</span>
       </div>
       <div class="metric-grid">
-        
+
         <div class="metric">
           <div class="label">BTC records</div>
-          <div class="value neutral" data-count="12">12</div>
+          <div class="value neutral" data-count="17">17</div>
         </div>
-        
+
         <div class="metric">
           <div class="label">Ignored non-BTC/legacy</div>
           <div class="value neutral" data-count="4">4</div>
         </div>
-        
+
         <div class="metric">
           <div class="label">Diagnostic notional</div>
           <div class="value neutral" data-count="100.00">$100.00</div>
         </div>
-        
+
         <div class="metric">
           <div class="label">Calibration min net</div>
           <div class="value neutral" data-count="">n/a</div>
         </div>
-        
+
         <div class="metric">
           <div class="label">Total candles</div>
-          <div class="value neutral" data-count="1576800">1,576,800</div>
+          <div class="value neutral" data-count="105120">105,120</div>
         </div>
-        
+
         <div class="metric">
           <div class="label">Signal window</div>
           <div class="value neutral" data-count="">n/a</div>
         </div>
-        
+
         <div class="metric">
           <div class="label">Data days</div>
           <div class="value neutral" data-count="1095.0">1,095.0</div>
         </div>
+
+        <div class="metric">
+          <div class="label">Data coverage</div>
+          <div class="value good" data-count="">full_3_year_dataset</div>
+        </div>
       </div>
-      <div class="data-window"><span>Symbols: BTC/USDT</span><span>Timeframes: 1m</span><span>Profile: high_quality</span><span>Frequency target: 5.00-20.00/day</span><span>Start: 2023-05-07T10:15:00+00:00</span><span>End: 2026-05-06T10:14:00+00:00</span><span>Production target: n/a bps</span><span>Production reward/cost: n/ax</span></div>
+      <div class="data-window"><span>Symbols: BTC/USDT</span><span>Timeframes: 15m</span><span>Profile: high_quality</span><span>Frequency target: 5.00-20.00/day</span><span>Start: 2023-05-07T08:15:00+00:00</span><span>End: 2026-05-06T08:00:00+00:00</span><span>Production target: n/a bps</span><span>Production reward/cost: n/ax</span></div>
+    </section>
+
+    <section class="panel span-12">
+      <div class="section-head">
+        <div>
+          <p class="eyebrow">Backtest period</p>
+          <h2>Data Coverage</h2>
+        </div>
+        <span class="tag good">full_3_year_dataset</span>
+      </div>
+      <div class="stacked"><div><strong>Backtest Period</strong><span>full_3_year_dataset</span></div><div><strong>Data Start</strong><span>2023-05-07T08:15:00+00:00</span></div><div><strong>Data End</strong><span>2026-05-06T08:00:00+00:00</span></div><div><strong>Calendar Days</strong><span>1,095.0</span></div><div><strong>Years Covered</strong><span>3.00</span></div><div><strong>Candle Count</strong><span>105,120</span></div><div><strong>Full 3-Year Dataset</strong><span>True</span></div></div>
     </section>
 
     <section class="panel span-12 terminal-panel">
@@ -153,8 +173,8 @@
       <div class="target-tape">
         <div class="target-card">
           <div class="label">Trades/day</div>
-          <div class="target-value warn">0.04</div>
-          <div class="progress" data-progress="0.04"><span></span></div>
+          <div class="target-value warn">0.05</div>
+          <div class="progress" data-progress="0.05"><span></span></div>
           <small>not_achieved</small>
         </div>
         <div class="target-card">
@@ -165,15 +185,27 @@
         </div>
         <div class="target-card">
           <div class="label">Avg daily return</div>
-          <div class="target-value neutral">0.01%</div>
-          <div class="progress" data-progress="0.12"><span></span></div>
+          <div class="target-value neutral">0.00%</div>
+          <div class="progress" data-progress="0.09"><span></span></div>
           <small>research metric</small>
         </div>
         <div class="target-card">
           <div class="label">Profitable days</div>
-          <div class="target-value neutral">2.05%</div>
-          <div class="progress" data-progress="4.11"><span></span></div>
+          <div class="target-value neutral">2.01%</div>
+          <div class="progress" data-progress="4.03"><span></span></div>
           <small>calendar basis</small>
+        </div>
+        <div class="target-card">
+          <div class="label">Days above 1%</div>
+          <div class="target-value neutral">2</div>
+          <div class="progress" data-progress="100.00"><span></span></div>
+          <small>count</small>
+        </div>
+        <div class="target-card">
+          <div class="label">Days above 2%</div>
+          <div class="target-value neutral">0</div>
+          <div class="progress" data-progress="0.00"><span></span></div>
+          <small>count</small>
         </div>
         <div class="target-card">
           <div class="label">Days above 5%</div>
@@ -183,7 +215,7 @@
         </div>
         <div class="target-card">
           <div class="label">Max daily drawdown</div>
-          <div class="target-value warn">2.28%</div>
+          <div class="target-value warn">0.34%</div>
           <div class="progress" data-progress="100.00"><span></span></div>
           <small>lower is better</small>
         </div>
@@ -203,7 +235,7 @@
           <h2>Latest BTC Runs</h2>
         </div>
       </div>
-      
+
       <div class="table-wrap">
         <table>
           <thead>
@@ -235,141 +267,6 @@
             </tr>
           </thead>
           <tbody>
-            <tr>
-              <td>btc_15m_3y_single_baseline_20260506_110944</td>
-              <td>2026-05-06 10:13:36</td>
-              <td>15m</td>
-              <td>n/a</td>
-              <td>105,120</td>
-              <td>$100.00</td>
-              <td>$0.25</td>
-              <td>n/a</td>
-              <td>n/a</td>
-              <td>n/a</td>
-              <td>n/a</td>
-              <td>n/a</td>
-              <td>n/a</td>
-              <td>n/a</td>
-              <td>n/a</td>
-              <td>n/a</td>
-              <td>not_profitable_out_of_sample</td>
-              <td>enabled</td>
-              <td>0</td>
-              <td>n/a</td>
-              <td>BTC/USDT breakout target=75.00bps hold=16 trades=395 net=$-103.32 pf=0.51</td>
-              <td>BTC/USDT breakout target=75.00bps hold=16 trades=395 net=$-103.32 pf=0.51</td>
-              <td>n/a</td>
-              <td><span class="tag bad">not_profitable_at_30_trades</span></td>
-            </tr>
-
-            <tr>
-              <td>btc_15m_3y_single_baseline_20260506_134123</td>
-              <td>2026-05-06 12:46:09</td>
-              <td>15m</td>
-              <td>n/a</td>
-              <td>105,120</td>
-              <td>$100.00</td>
-              <td>$0.25</td>
-              <td>n/a</td>
-              <td>n/a</td>
-              <td>n/a</td>
-              <td>0.36</td>
-              <td>n/a</td>
-              <td>0.00%</td>
-              <td>0.09%</td>
-              <td>not achieved yet</td>
-              <td>not achieved yet</td>
-              <td>not_profitable_out_of_sample</td>
-              <td>enabled</td>
-              <td>0</td>
-              <td>n/a</td>
-              <td>BTC/USDT breakout target=75.00bps hold=16 trades=395 net=$-103.32 pf=0.51</td>
-              <td>BTC/USDT breakout target=75.00bps hold=16 trades=395 net=$-103.32 pf=0.51</td>
-              <td>n/a</td>
-              <td><span class="tag bad">not_profitable_at_30_trades</span></td>
-            </tr>
-
-            <tr>
-              <td>btc_5m_3y_single_baseline_20260506_134633</td>
-              <td>2026-05-06 12:56:52</td>
-              <td>5m</td>
-              <td>n/a</td>
-              <td>315,360</td>
-              <td>$100.00</td>
-              <td>$0.25</td>
-              <td>n/a</td>
-              <td>n/a</td>
-              <td>n/a</td>
-              <td>0.43</td>
-              <td>n/a</td>
-              <td>0.00%</td>
-              <td>0.10%</td>
-              <td>not achieved yet</td>
-              <td>not achieved yet</td>
-              <td>not_profitable_out_of_sample</td>
-              <td>enabled</td>
-              <td>0</td>
-              <td>n/a</td>
-              <td>BTC/USDT breakout target=75.00bps hold=16 trades=474 net=$-132.97 pf=0.41</td>
-              <td>BTC/USDT breakout target=75.00bps hold=16 trades=474 net=$-132.97 pf=0.41</td>
-              <td>n/a</td>
-              <td><span class="tag bad">not_profitable_at_30_trades</span></td>
-            </tr>
-
-            <tr>
-              <td>btc_1m_fast_futures_scalping_agents_20260506_143333</td>
-              <td>2026-05-06 13:34:11</td>
-              <td>1m</td>
-              <td>fast_futures_scalping_search</td>
-              <td>1,576,800</td>
-              <td>$100.00</td>
-              <td>n/a</td>
-              <td>agent_3_adaptive_experimental</td>
-              <td>1.00</td>
-              <td>0</td>
-              <td>1.21</td>
-              <td>n/a</td>
-              <td>0.00%</td>
-              <td>0.17%</td>
-              <td>unrealistic_given_data</td>
-              <td>unrealistic_given_data</td>
-              <td>not_profitable_out_of_sample</td>
-              <td>n/a</td>
-              <td>0</td>
-              <td>n/a</td>
-              <td>BTC/USDT adaptive_hybrid target=16.00bps hold=24 trades=1311 net=$-196.07 pf=0.05</td>
-              <td>BTC/USDT adaptive_hybrid target=16.00bps hold=24 trades=1311 net=$-196.07 pf=0.05</td>
-              <td>n/a</td>
-              <td><span class="tag bad">not_profitable_out_of_sample</span></td>
-            </tr>
-
-            <tr>
-              <td>btc_15m_fast_futures_scalping_agents_20260506_143441</td>
-              <td>2026-05-06 13:34:57</td>
-              <td>15m</td>
-              <td>fast_futures_scalping_search</td>
-              <td>105,120</td>
-              <td>$100.00</td>
-              <td>n/a</td>
-              <td>agent_2_microstructure_scalping</td>
-              <td>1.00</td>
-              <td>0</td>
-              <td>1.77</td>
-              <td>n/a</td>
-              <td>-0.22%</td>
-              <td>0.25%</td>
-              <td>unrealistic_given_data</td>
-              <td>unrealistic_given_data</td>
-              <td>not_profitable_out_of_sample</td>
-              <td>n/a</td>
-              <td>0</td>
-              <td>n/a</td>
-              <td>BTC/USDT ema_vwap_continuation target=24.00bps hold=16 trades=1941 net=$-295.76 pf=0.12</td>
-              <td>BTC/USDT ema_vwap_continuation target=24.00bps hold=16 trades=1941 net=$-295.76 pf=0.12</td>
-              <td>n/a</td>
-              <td><span class="tag bad">not_profitable_out_of_sample</span></td>
-            </tr>
-
             <tr>
               <td>btc_5m_fast_futures_scalping_agents_20260506_143441</td>
               <td>2026-05-06 13:35:12</td>
@@ -503,6 +400,141 @@
               <td>BTC/USDT quality_range_breakout target=200.00bps hold=180 trades=45 net=$6.20 pf=1.27</td>
               <td>n/a</td>
               <td><span class="tag bad">not_profitable_out_of_sample</span></td>
+            </tr>
+
+            <tr>
+              <td>btc_5m_high_quality_futures_search_20260506_190445</td>
+              <td>2026-05-06 18:05:17</td>
+              <td>5m</td>
+              <td>high_quality</td>
+              <td>315,360</td>
+              <td>$100.00</td>
+              <td>n/a</td>
+              <td>agent_2_microstructure_scalping</td>
+              <td>1.00</td>
+              <td>0</td>
+              <td>0.04</td>
+              <td>not_achieved</td>
+              <td>0.00%</td>
+              <td>0.00%</td>
+              <td>unrealistic_given_data</td>
+              <td>unrealistic_given_data</td>
+              <td>not_profitable_out_of_sample</td>
+              <td>n/a</td>
+              <td>0</td>
+              <td>0</td>
+              <td>BTC/USDT quality_range_breakout target=30.00bps hold=6 trades=2 net=$-0.28 pf=0.00</td>
+              <td>BTC/USDT quality_vwap_pullback target=50.00bps hold=6 trades=31 net=$-4.61 pf=0.12</td>
+              <td>n/a</td>
+              <td><span class="tag bad">not_profitable_out_of_sample</span></td>
+            </tr>
+
+            <tr>
+              <td>btc_1m_high_quality_futures_search_20260506_190524</td>
+              <td>2026-05-06 18:11:19</td>
+              <td>1m</td>
+              <td>high_quality</td>
+              <td>1,576,800</td>
+              <td>$100.00</td>
+              <td>n/a</td>
+              <td>agent_1_momentum_breakout</td>
+              <td>1.00</td>
+              <td>0</td>
+              <td>0.05</td>
+              <td>not_achieved</td>
+              <td>0.00%</td>
+              <td>0.01%</td>
+              <td>unrealistic_given_data</td>
+              <td>unrealistic_given_data</td>
+              <td>not_profitable_out_of_sample</td>
+              <td>n/a</td>
+              <td>0</td>
+              <td>0</td>
+              <td>BTC/USDT quality_range_breakout target=200.00bps hold=30 trades=23 net=$4.32 pf=1.92</td>
+              <td>BTC/USDT quality_range_breakout target=150.00bps hold=30 trades=52 net=$-1.44 pf=0.91</td>
+              <td>n/a</td>
+              <td><span class="tag bad">not_profitable_out_of_sample</span></td>
+            </tr>
+
+            <tr>
+              <td>btc_15m_high_quality_futures_search_20260506_191130</td>
+              <td>2026-05-06 18:11:35</td>
+              <td>15m</td>
+              <td>high_quality</td>
+              <td>105,120</td>
+              <td>$100.00</td>
+              <td>n/a</td>
+              <td>agent_1_momentum_breakout</td>
+              <td>1.00</td>
+              <td>0</td>
+              <td>0.05</td>
+              <td>not_achieved</td>
+              <td>0.00%</td>
+              <td>0.01%</td>
+              <td>not_achieved</td>
+              <td>not_achieved</td>
+              <td>potentially_promising_needs_more_testing</td>
+              <td>n/a</td>
+              <td>62</td>
+              <td>0</td>
+              <td>BTC/USDT quality_momentum_expansion target=200.00bps hold=2 trades=48 net=$4.62 pf=2.01</td>
+              <td>BTC/USDT quality_momentum_expansion target=200.00bps hold=2 trades=48 net=$4.62 pf=2.01</td>
+              <td>n/a</td>
+              <td><span class="tag good">potentially_promising_needs_more_testing</span></td>
+            </tr>
+
+            <tr>
+              <td>btc_15m_high_quality_futures_search_20260506_191256</td>
+              <td>2026-05-06 18:13:00</td>
+              <td>15m</td>
+              <td>high_quality</td>
+              <td>105,120</td>
+              <td>$100.00</td>
+              <td>n/a</td>
+              <td>agent_1_momentum_breakout</td>
+              <td>1.00</td>
+              <td>0</td>
+              <td>0.05</td>
+              <td>not_achieved</td>
+              <td>0.00%</td>
+              <td>0.01%</td>
+              <td>not_achieved</td>
+              <td>not_achieved</td>
+              <td>potentially_promising_needs_more_testing</td>
+              <td>n/a</td>
+              <td>62</td>
+              <td>0</td>
+              <td>BTC/USDT quality_momentum_expansion target=200.00bps hold=2 trades=48 net=$4.62 pf=2.01</td>
+              <td>BTC/USDT quality_momentum_expansion target=200.00bps hold=2 trades=48 net=$4.62 pf=2.01</td>
+              <td>n/a</td>
+              <td><span class="tag good">potentially_promising_needs_more_testing</span></td>
+            </tr>
+
+            <tr>
+              <td>btc_15m_high_quality_futures_search_20260506_191327</td>
+              <td>2026-05-06 18:13:31</td>
+              <td>15m</td>
+              <td>high_quality</td>
+              <td>105,120</td>
+              <td>$100.00</td>
+              <td>n/a</td>
+              <td>agent_1_momentum_breakout</td>
+              <td>1.00</td>
+              <td>0</td>
+              <td>0.05</td>
+              <td>not_achieved</td>
+              <td>0.00%</td>
+              <td>0.01%</td>
+              <td>not_achieved</td>
+              <td>not_achieved</td>
+              <td>potentially_promising_needs_more_testing</td>
+              <td>n/a</td>
+              <td>62</td>
+              <td>0</td>
+              <td>BTC/USDT quality_momentum_expansion target=200.00bps hold=2 trades=48 net=$4.62 pf=2.01</td>
+              <td>BTC/USDT quality_momentum_expansion target=200.00bps hold=2 trades=48 net=$4.62 pf=2.01</td>
+              <td>n/a</td>
+              <td><span class="tag bad">not_profitable_frequency_target_not_met</span></td>
             </tr></tbody>
         </table>
       </div>
@@ -516,12 +548,12 @@
           <h2>Timeframe Completion</h2>
         </div>
       </div>
-      <div class="table-wrap compact"><table><thead><tr><th>Timeframe</th><th>Data</th><th>Backtest</th><th>Candles</th><th>Days</th><th>Latest run</th><th>Verdict</th></tr></thead><tbody><tr><td>15m</td><td>present</td><td>complete</td><td>105,120</td><td>1,095.0</td><td>btc_15m_fast_futures_scalping_agents_20260506_143441</td><td><span class="tag bad">not_profitable_out_of_sample</span></td></tr><tr><td>5m</td><td>present</td><td>complete</td><td>315,360</td><td>1,095.0</td><td>btc_5m_high_quality_futures_search_20260506_184328</td><td><span class="tag bad">not_profitable_out_of_sample</span></td></tr><tr><td>1m</td><td>present</td><td>complete</td><td>1,576,800</td><td>1,095.0</td><td>btc_1m_high_quality_futures_search_20260506_184408</td><td><span class="tag bad">not_profitable_out_of_sample</span></td></tr></tbody></table></div>
+      <div class="table-wrap compact"><table><thead><tr><th>Timeframe</th><th>Data</th><th>Backtest</th><th>Candles</th><th>Days</th><th>Start</th><th>End</th><th>Coverage</th><th>Latest run</th><th>Verdict</th></tr></thead><tbody><tr><td>15m</td><td>present</td><td>complete</td><td>105,120</td><td>1,095.0</td><td>2023-05-07T08:15:00+00:00</td><td>2026-05-06T08:00:00+00:00</td><td>full_3_year_dataset</td><td>btc_15m_high_quality_futures_search_20260506_191327</td><td><span class="tag bad">not_profitable_frequency_target_not_met</span></td></tr><tr><td>5m</td><td>present</td><td>complete</td><td>315,360</td><td>1,095.0</td><td>2023-05-07T09:25:00+00:00</td><td>2026-05-06T09:20:00+00:00</td><td>full_3_year_dataset</td><td>btc_5m_high_quality_futures_search_20260506_190445</td><td><span class="tag bad">not_profitable_out_of_sample</span></td></tr><tr><td>1m</td><td>present</td><td>complete</td><td>1,576,800</td><td>1,095.0</td><td>2023-05-07T10:15:00+00:00</td><td>2026-05-06T10:14:00+00:00</td><td>full_3_year_dataset</td><td>btc_1m_high_quality_futures_search_20260506_190524</td><td><span class="tag bad">not_profitable_out_of_sample</span></td></tr></tbody></table></div>
     </section>
 
     <section class="panel span-4">
       <h2>Aggregate Best Overall</h2>
-      
+
       <div class="result-line">
         <strong>BTC/USDT quality_range_breakout</strong>
         <span>Trades 45 | Net $6.20 | Avg $0.14 | PF 1.27</span>
@@ -534,7 +566,7 @@
 
     <section class="panel span-4">
       <h2>Aggregate Best With 30+ Trades</h2>
-      
+
       <div class="result-line">
         <strong>BTC/USDT quality_range_breakout</strong>
         <span>Trades 45 | Net $6.20 | Avg $0.14 | PF 1.27</span>
@@ -547,7 +579,7 @@
 
     <section class="panel span-4">
       <h2>Aggregate Worst Overall</h2>
-      
+
       <div class="result-line">
         <strong>BTC/USDT adaptive_hybrid</strong>
         <span>Trades 27209 | Net $-3,876.32 | Avg $-0.14 | PF 0.06</span>
@@ -560,22 +592,22 @@
 
     <section class="panel span-6">
       <h2>Timeframe Comparison</h2>
-      <div class="table-wrap compact"><table><thead><tr><th>Timeframe</th><th>Runs</th><th>Best net</th><th>Best PF</th><th>Best 30+</th></tr></thead><tbody><tr><td>15m</td><td>4</td><td>$-103.32</td><td>0.51</td><td>BTC/USDT breakout target=75.00bps hold=16 trades=395 net=$-103.32 pf=0.51</td></tr><tr><td>1m</td><td>3</td><td>$6.20</td><td>1.27</td><td>BTC/USDT quality_range_breakout target=200.00bps hold=180 trades=45 net=$6.20 pf=1.27</td></tr><tr><td>5m</td><td>5</td><td>$-1.26</td><td>0.99</td><td>BTC/USDT quality_vwap_pullback target=150.00bps hold=36 trades=230 net=$-1.26 pf=0.99</td></tr></tbody></table></div>
+      <div class="table-wrap compact"><table><thead><tr><th>Timeframe</th><th>Runs</th><th>Best net</th><th>Best PF</th><th>Best 30+</th></tr></thead><tbody><tr><td>15m</td><td>7</td><td>$4.62</td><td>2.01</td><td>BTC/USDT quality_momentum_expansion target=200.00bps hold=2 trades=48 net=$4.62 pf=2.01</td></tr><tr><td>1m</td><td>4</td><td>$6.20</td><td>1.27</td><td>BTC/USDT quality_range_breakout target=200.00bps hold=180 trades=45 net=$6.20 pf=1.27</td></tr><tr><td>5m</td><td>6</td><td>$-0.28</td><td>0.00</td><td>BTC/USDT quality_vwap_pullback target=150.00bps hold=36 trades=230 net=$-1.26 pf=0.99</td></tr></tbody></table></div>
     </section>
 
     <section class="panel span-6">
       <h2>Strategy Leaderboard</h2>
-      <div class="table-wrap compact"><table class="leaderboard"><thead><tr><th>#</th><th>Tf</th><th>Agent</th><th>Strategy</th><th>Trades</th><th>TPD</th><th>Net</th><th>PF</th><th>Med day</th><th>Fee drag</th><th>WF</th></tr></thead><tbody><tr><td><span class="rank">1</span></td><td>1m</td><td>agent_1_momentum_breakout</td><td>quality_range_breakout</td><td>45</td><td>0.04</td><td>$6.20</td><td>1.27</td><td>0.00%</td><td>0.01%</td><td>not_profitable_out_of_sample</td></tr><tr><td><span class="rank">2</span></td><td>1m</td><td>agent_1_momentum_breakout</td><td>quality_range_breakout</td><td>45</td><td>0.04</td><td>$3.77</td><td>1.17</td><td>0.00%</td><td>0.01%</td><td>not_profitable_out_of_sample</td></tr><tr><td><span class="rank">3</span></td><td>1m</td><td>agent_1_momentum_breakout</td><td>quality_range_breakout</td><td>45</td><td>0.04</td><td>$2.25</td><td>1.14</td><td>0.00%</td><td>0.01%</td><td>not_profitable_out_of_sample</td></tr><tr><td><span class="rank">4</span></td><td>1m</td><td>agent_1_momentum_breakout</td><td>quality_range_breakout</td><td>45</td><td>0.04</td><td>$0.75</td><td>1.04</td><td>0.00%</td><td>0.01%</td><td>not_profitable_out_of_sample</td></tr><tr><td><span class="rank">5</span></td><td>1m</td><td>agent_1_momentum_breakout</td><td>quality_range_breakout</td><td>45</td><td>0.04</td><td>$0.50</td><td>1.04</td><td>0.00%</td><td>0.01%</td><td>not_profitable_out_of_sample</td></tr><tr><td><span class="rank">6</span></td><td>1m</td><td>agent_1_momentum_breakout</td><td>quality_range_breakout</td><td>98</td><td>0.09</td><td>$-0.66</td><td>0.99</td><td>0.00%</td><td>0.01%</td><td>not_profitable_out_of_sample</td></tr><tr><td><span class="rank">7</span></td><td>5m</td><td>agent_2_microstructure_scalping</td><td>quality_vwap_pullback</td><td>230</td><td>0.21</td><td>$-1.26</td><td>0.99</td><td>0.00%</td><td>0.03%</td><td>not_profitable_out_of_sample</td></tr><tr><td><span class="rank">8</span></td><td>1m</td><td>agent_1_momentum_breakout</td><td>quality_range_breakout</td><td>74</td><td>0.07</td><td>$-1.68</td><td>0.94</td><td>0.00%</td><td>0.01%</td><td>not_profitable_out_of_sample</td></tr><tr><td><span class="rank">9</span></td><td>1m</td><td>agent_1_momentum_breakout</td><td>quality_range_breakout</td><td>74</td><td>0.07</td><td>$-1.82</td><td>0.92</td><td>0.00%</td><td>0.01%</td><td>not_profitable_out_of_sample</td></tr><tr><td><span class="rank">10</span></td><td>1m</td><td>agent_1_momentum_breakout</td><td>quality_range_breakout</td><td>74</td><td>0.07</td><td>$-2.72</td><td>0.94</td><td>0.00%</td><td>0.01%</td><td>not_profitable_out_of_sample</td></tr><tr><td><span class="rank">11</span></td><td>1m</td><td>agent_1_momentum_breakout</td><td>quality_range_breakout</td><td>98</td><td>0.09</td><td>$-3.08</td><td>0.94</td><td>0.00%</td><td>0.01%</td><td>not_profitable_out_of_sample</td></tr><tr><td><span class="rank">12</span></td><td>5m</td><td>agent_2_microstructure_scalping</td><td>quality_vwap_pullback</td><td>220</td><td>0.20</td><td>$-3.76</td><td>0.96</td><td>0.00%</td><td>0.03%</td><td>not_profitable_out_of_sample</td></tr></tbody></table></div>
+      <div class="table-wrap compact"><table class="leaderboard"><thead><tr><th>#</th><th>Tf</th><th>Agent</th><th>Strategy</th><th>Trades</th><th>TPD</th><th>Net</th><th>PF</th><th>Med day</th><th>Fee drag</th><th>WF</th></tr></thead><tbody><tr><td><span class="rank">1</span></td><td>1m</td><td>agent_1_momentum_breakout</td><td>quality_range_breakout</td><td>45</td><td>0.04</td><td>$6.20</td><td>1.27</td><td>0.00%</td><td>0.01%</td><td>not_profitable_out_of_sample</td></tr><tr><td><span class="rank">2</span></td><td>15m</td><td>agent_1_momentum_breakout</td><td>quality_momentum_expansion</td><td>48</td><td>0.05</td><td>$4.62</td><td>2.01</td><td>0.00%</td><td>0.01%</td><td>potentially_promising_needs_more_testing</td></tr><tr><td><span class="rank">3</span></td><td>15m</td><td>agent_1_momentum_breakout</td><td>quality_momentum_expansion</td><td>48</td><td>0.05</td><td>$4.62</td><td>2.01</td><td>0.00%</td><td>0.01%</td><td>potentially_promising_needs_more_testing</td></tr><tr><td><span class="rank">4</span></td><td>15m</td><td>agent_1_momentum_breakout</td><td>quality_momentum_expansion</td><td>48</td><td>0.05</td><td>$4.62</td><td>2.01</td><td>0.00%</td><td>0.01%</td><td>potentially_promising_needs_more_testing</td></tr><tr><td><span class="rank">5</span></td><td>1m</td><td>agent_1_momentum_breakout</td><td>quality_range_breakout</td><td>23</td><td>0.02</td><td>$4.32</td><td>1.92</td><td>0.00%</td><td>0.00%</td><td>too_few_trades</td></tr><tr><td><span class="rank">6</span></td><td>15m</td><td>agent_1_momentum_breakout</td><td>quality_momentum_expansion</td><td>44</td><td>0.04</td><td>$4.26</td><td>2.02</td><td>0.00%</td><td>0.01%</td><td>potentially_promising_needs_more_testing</td></tr><tr><td><span class="rank">7</span></td><td>15m</td><td>agent_1_momentum_breakout</td><td>quality_momentum_expansion</td><td>44</td><td>0.04</td><td>$4.26</td><td>2.02</td><td>0.00%</td><td>0.01%</td><td>potentially_promising_needs_more_testing</td></tr><tr><td><span class="rank">8</span></td><td>15m</td><td>agent_1_momentum_breakout</td><td>quality_momentum_expansion</td><td>44</td><td>0.04</td><td>$4.26</td><td>2.02</td><td>0.00%</td><td>0.01%</td><td>potentially_promising_needs_more_testing</td></tr><tr><td><span class="rank">9</span></td><td>15m</td><td>agent_1_momentum_breakout</td><td>quality_momentum_expansion</td><td>48</td><td>0.05</td><td>$4.02</td><td>1.82</td><td>0.00%</td><td>0.01%</td><td>potentially_promising_needs_more_testing</td></tr><tr><td><span class="rank">10</span></td><td>15m</td><td>agent_1_momentum_breakout</td><td>quality_momentum_expansion</td><td>48</td><td>0.05</td><td>$4.02</td><td>1.82</td><td>0.00%</td><td>0.01%</td><td>potentially_promising_needs_more_testing</td></tr><tr><td><span class="rank">11</span></td><td>15m</td><td>agent_1_momentum_breakout</td><td>quality_momentum_expansion</td><td>48</td><td>0.05</td><td>$4.02</td><td>1.82</td><td>0.00%</td><td>0.01%</td><td>potentially_promising_needs_more_testing</td></tr><tr><td><span class="rank">12</span></td><td>1m</td><td>agent_1_momentum_breakout</td><td>quality_range_breakout</td><td>45</td><td>0.04</td><td>$3.77</td><td>1.17</td><td>0.00%</td><td>0.01%</td><td>not_profitable_out_of_sample</td></tr></tbody></table></div>
     </section>
 
     <section class="panel span-6">
       <h2>Agent Comparison</h2>
-      <div class="table-wrap compact"><table><thead><tr><th>Agent</th><th>Sets</th><th>Positive</th><th>Best</th><th>Best 30+</th></tr></thead><tbody><tr><td>agent_1_momentum_breakout</td><td>432</td><td>10</td><td>BTC/USDT quality_range_breakout target=200.00bps hold=180 trades=45 net=$6.20 pf=1.27</td><td>BTC/USDT quality_range_breakout target=200.00bps hold=180 trades=45 net=$6.20 pf=1.27</td></tr><tr><td>agent_2_microstructure_scalping</td><td>192</td><td>0</td><td>BTC/USDT quality_vwap_pullback target=150.00bps hold=90 trades=310 net=$-38.45 pf=0.69</td><td>BTC/USDT quality_vwap_pullback target=150.00bps hold=90 trades=310 net=$-38.45 pf=0.69</td></tr><tr><td>agent_3_adaptive_experimental</td><td>240</td><td>0</td><td>BTC/USDT quality_adaptive_breakout target=200.00bps hold=180 trades=232 net=$-15.60 pf=0.85</td><td>BTC/USDT quality_adaptive_breakout target=200.00bps hold=180 trades=232 net=$-15.60 pf=0.85</td></tr></tbody></table></div>
+      <div class="table-wrap compact"><table><thead><tr><th>Agent</th><th>Sets</th><th>Positive</th><th>Best</th><th>Best 30+</th></tr></thead><tbody><tr><td>agent_1_momentum_breakout</td><td>720</td><td>111</td><td>BTC/USDT quality_momentum_expansion target=200.00bps hold=2 trades=48 net=$4.62 pf=2.01</td><td>BTC/USDT quality_momentum_expansion target=200.00bps hold=2 trades=48 net=$4.62 pf=2.01</td></tr><tr><td>agent_2_microstructure_scalping</td><td>352</td><td>41</td><td>BTC/USDT quality_vwap_pullback target=150.00bps hold=2 trades=20 net=$0.74 pf=1.30</td><td>BTC/USDT quality_vwap_pullback target=150.00bps hold=2 trades=43 net=$0.24 pf=1.05</td></tr><tr><td>agent_3_adaptive_experimental</td><td>240</td><td>0</td><td>BTC/USDT quality_adaptive_breakout target=200.00bps hold=2 trades=46 net=$-0.45 pf=0.94</td><td>BTC/USDT quality_adaptive_breakout target=200.00bps hold=2 trades=46 net=$-0.45 pf=0.94</td></tr></tbody></table></div>
     </section>
 
     <section class="panel span-6">
       <h2>Latest Run Performance Summary</h2>
-      <div class="table-wrap compact"><table><thead><tr><th>Row</th><th>Strategy</th><th>Trades</th><th>Net</th><th>Avg</th><th>PF</th><th>Win</th><th>Costs</th><th>Max DD</th><th>SL / TP</th></tr></thead><tbody><tr><td>Best overall</td><td>quality_range_breakout</td><td>45</td><td>$6.20</td><td>$0.14</td><td>1.27</td><td>51.11%</td><td>$6.31</td><td>$6.25</td><td>n/a% / n/a%</td></tr><tr><td>Best 30+</td><td>quality_range_breakout</td><td>45</td><td>$6.20</td><td>$0.14</td><td>1.27</td><td>51.11%</td><td>$6.31</td><td>$6.25</td><td>n/a% / n/a%</td></tr><tr><td>Worst overall</td><td>quality_adaptive_breakout</td><td>1257</td><td>$-220.98</td><td>$-0.18</td><td>0.59</td><td>31.42%</td><td>$176.01</td><td>$221.20</td><td>n/a% / n/a%</td></tr></tbody></table></div>
+      <div class="table-wrap compact"><table><thead><tr><th>Row</th><th>Strategy</th><th>Trades</th><th>Net</th><th>Avg</th><th>PF</th><th>Win</th><th>Costs</th><th>Max DD</th><th>SL / TP</th></tr></thead><tbody><tr><td>Best overall</td><td>quality_momentum_expansion</td><td>48</td><td>$4.62</td><td>$0.10</td><td>2.01</td><td>43.75%</td><td>$6.73</td><td>$1.25</td><td>n/a% / n/a%</td></tr><tr><td>Best 30+</td><td>quality_momentum_expansion</td><td>48</td><td>$4.62</td><td>$0.10</td><td>2.01</td><td>43.75%</td><td>$6.73</td><td>$1.25</td><td>n/a% / n/a%</td></tr><tr><td>Worst overall</td><td>quality_adaptive_breakout</td><td>188</td><td>$-38.00</td><td>$-0.20</td><td>0.24</td><td>30.32%</td><td>$26.28</td><td>$38.01</td><td>n/a% / n/a%</td></tr></tbody></table></div>
     </section>
 
     <section class="panel span-6">
@@ -583,15 +615,15 @@
       <div class="metric-grid">
         <div class="metric">
           <div class="label">Gross PnL</div>
-          <div class="value neutral" data-count="12.51">$12.51</div>
+          <div class="value neutral" data-count="11.35">$11.35</div>
         </div>
         <div class="metric">
           <div class="label">Costs</div>
-          <div class="value warn" data-count="6.31">$6.31</div>
+          <div class="value warn" data-count="6.73">$6.73</div>
         </div>
         <div class="metric">
           <div class="label">Net PnL</div>
-          <div class="value good" data-count="6.20">$6.20</div>
+          <div class="value good" data-count="4.62">$4.62</div>
         </div>
         <div class="metric">
           <div class="label">Cost/trade</div>
@@ -599,7 +631,7 @@
         </div>
         <div class="metric">
           <div class="label">Costs/gross</div>
-          <div class="value warn" data-count="">50.45%</div>
+          <div class="value warn" data-count="">59.29%</div>
         </div>
         <div class="metric">
           <div class="label">Fee drag/day</div>
@@ -608,18 +640,23 @@
     </section>
 
     <section class="panel span-6">
+      <h2>Macro / News Filter</h2>
+      <div class="stacked"><div><strong>Enabled</strong><span>False</span></div><div><strong>Paper only</strong><span>True</span></div><div><strong>Allow trade</strong><span>True</span></div><div><strong>Risk level</strong><span>disabled</span></div><div><strong>Source</strong><span>local_cache</span></div><div><strong>Reason</strong><span>macro/news filter disabled</span></div><div><strong>Nearby high-impact events</strong><span>none</span></div></div>
+    </section>
+
+    <section class="panel span-6">
       <h2>Daily PnL Distribution</h2>
-      <div class="stacked"><div><strong>Basis</strong><span>full_data_period_including_zero_trade_days</span></div><div><strong>Calendar days</strong><span>n/a</span></div><div><strong>Active trade days</strong><span>n/a</span></div><div><strong>Zero-trade days</strong><span>n/a</span></div><div><strong>Best daily return</strong><span>2.58%</span></div><div><strong>Worst daily return</strong><span>-2.28%</span></div><div><strong>Days profitable</strong><span>2.05%</span></div><div><strong>Days above 5%</strong><span>0</span></div></div>
+      <div class="stacked"><div><strong>Basis</strong><span>full_data_period_including_zero_trade_days</span></div><div><strong>Calendar days</strong><span>n/a</span></div><div><strong>Active trade days</strong><span>n/a</span></div><div><strong>Zero-trade days</strong><span>n/a</span></div><div><strong>Best daily return</strong><span>1.55%</span></div><div><strong>Worst daily return</strong><span>-0.34%</span></div><div><strong>Days profitable</strong><span>2.01%</span></div><div><strong>Days above 5%</strong><span>0</span></div></div>
     </section>
 
     <section class="panel span-6">
       <h2>Daily Return Distribution Chart</h2>
-      <div class="bar-chart"><div class="bar-row"><span>Avg</span><div class="bar-shell"><i class="good" style="width:0.24%"></i></div><strong>0.01%</strong></div><div class="bar-row"><span>Median</span><div class="bar-shell"><i class="neutral" style="width:0.00%"></i></div><strong>0.00%</strong></div><div class="bar-row"><span>Best</span><div class="bar-shell"><i class="good" style="width:100.00%"></i></div><strong>2.58%</strong></div><div class="bar-row"><span>Worst</span><div class="bar-shell"><i class="bad" style="width:88.39%"></i></div><strong>-2.28%</strong></div><div class="bar-row"><span>Fee drag</span><div class="bar-shell"><i class="bad" style="width:0.24%"></i></div><strong>-0.01%</strong></div></div>
+      <div class="bar-chart"><div class="bar-row"><span>Avg</span><div class="bar-shell"><i class="good" style="width:0.29%"></i></div><strong>0.00%</strong></div><div class="bar-row"><span>Median</span><div class="bar-shell"><i class="neutral" style="width:0.00%"></i></div><strong>0.00%</strong></div><div class="bar-row"><span>Best</span><div class="bar-shell"><i class="good" style="width:100.00%"></i></div><strong>1.55%</strong></div><div class="bar-row"><span>Worst</span><div class="bar-shell"><i class="bad" style="width:21.98%"></i></div><strong>-0.34%</strong></div><div class="bar-row"><span>Fee drag</span><div class="bar-shell"><i class="bad" style="width:0.42%"></i></div><strong>-0.01%</strong></div></div>
     </section>
 
     <section class="panel span-6">
       <h2>Trades/Day vs PF Chart</h2>
-      <div class="scatter"><div class="scatter-row"><span>1m quality_range_breakout</span><div class="scatter-track"><i style="left:0.04%"></i></div><strong>TPD 0.04 | PF 1.27</strong></div><div class="scatter-row"><span>1m quality_range_breakout</span><div class="scatter-track"><i style="left:0.04%"></i></div><strong>TPD 0.04 | PF 1.17</strong></div><div class="scatter-row"><span>1m quality_range_breakout</span><div class="scatter-track"><i style="left:0.04%"></i></div><strong>TPD 0.04 | PF 1.14</strong></div><div class="scatter-row"><span>1m quality_range_breakout</span><div class="scatter-track"><i style="left:0.04%"></i></div><strong>TPD 0.04 | PF 1.04</strong></div><div class="scatter-row"><span>1m quality_range_breakout</span><div class="scatter-track"><i style="left:0.04%"></i></div><strong>TPD 0.04 | PF 1.04</strong></div><div class="scatter-row"><span>1m quality_range_breakout</span><div class="scatter-track"><i style="left:0.09%"></i></div><strong>TPD 0.09 | PF 0.99</strong></div><div class="scatter-row"><span>5m quality_vwap_pullback</span><div class="scatter-track"><i style="left:0.21%"></i></div><strong>TPD 0.21 | PF 0.99</strong></div><div class="scatter-row"><span>1m quality_range_breakout</span><div class="scatter-track"><i style="left:0.07%"></i></div><strong>TPD 0.07 | PF 0.94</strong></div><div class="scatter-row"><span>1m quality_range_breakout</span><div class="scatter-track"><i style="left:0.07%"></i></div><strong>TPD 0.07 | PF 0.92</strong></div><div class="scatter-row"><span>1m quality_range_breakout</span><div class="scatter-track"><i style="left:0.07%"></i></div><strong>TPD 0.07 | PF 0.94</strong></div></div>
+      <div class="scatter"><div class="scatter-row"><span>1m quality_range_breakout</span><div class="scatter-track"><i style="left:0.04%"></i></div><strong>TPD 0.04 | PF 1.27</strong></div><div class="scatter-row"><span>15m quality_momentum_expansion</span><div class="scatter-track"><i style="left:0.05%"></i></div><strong>TPD 0.05 | PF 2.01</strong></div><div class="scatter-row"><span>15m quality_momentum_expansion</span><div class="scatter-track"><i style="left:0.05%"></i></div><strong>TPD 0.05 | PF 2.01</strong></div><div class="scatter-row"><span>15m quality_momentum_expansion</span><div class="scatter-track"><i style="left:0.05%"></i></div><strong>TPD 0.05 | PF 2.01</strong></div><div class="scatter-row"><span>1m quality_range_breakout</span><div class="scatter-track"><i style="left:0.02%"></i></div><strong>TPD 0.02 | PF 1.92</strong></div><div class="scatter-row"><span>15m quality_momentum_expansion</span><div class="scatter-track"><i style="left:0.04%"></i></div><strong>TPD 0.04 | PF 2.02</strong></div><div class="scatter-row"><span>15m quality_momentum_expansion</span><div class="scatter-track"><i style="left:0.04%"></i></div><strong>TPD 0.04 | PF 2.02</strong></div><div class="scatter-row"><span>15m quality_momentum_expansion</span><div class="scatter-track"><i style="left:0.04%"></i></div><strong>TPD 0.04 | PF 2.02</strong></div><div class="scatter-row"><span>15m quality_momentum_expansion</span><div class="scatter-track"><i style="left:0.05%"></i></div><strong>TPD 0.05 | PF 1.82</strong></div><div class="scatter-row"><span>15m quality_momentum_expansion</span><div class="scatter-track"><i style="left:0.05%"></i></div><strong>TPD 0.05 | PF 1.82</strong></div></div>
     </section>
 
     <section class="panel span-6">
@@ -641,7 +678,7 @@
 
     <section class="panel span-6">
       <h2>Walk-Forward Validation</h2>
-      <p class="muted">Verdict: n/a. This is a chronological train/validation/test split, not a rolling optimizer.</p><div class="table-wrap compact"><table><thead><tr><th>Split</th><th>Trades</th><th>Net</th><th>Avg</th><th>PF</th><th>Max DD</th></tr></thead><tbody><tr><td>train</td><td>15</td><td>$-0.11</td><td>$-0.01</td><td>0.99</td><td>$3.97</td></tr><tr><td>validation</td><td>15</td><td>$2.21</td><td>$0.15</td><td>1.24</td><td>$2.28</td></tr><tr><td>test</td><td>15</td><td>$4.09</td><td>$0.27</td><td>1.70</td><td>$2.28</td></tr></tbody></table></div><p class="muted">Overfit warning: True</p>
+      <p class="muted">Verdict: n/a. This is a chronological train/validation/test split, not a rolling optimizer.</p><div class="table-wrap compact"><table><thead><tr><th>Split</th><th>Trades</th><th>Net</th><th>Avg</th><th>PF</th><th>Max DD</th></tr></thead><tbody><tr><td>train</td><td>16</td><td>$0.42</td><td>$0.03</td><td>1.31</td><td>$1.25</td></tr><tr><td>validation</td><td>16</td><td>$3.40</td><td>$0.21</td><td>3.61</td><td>$0.73</td></tr><tr><td>test</td><td>16</td><td>$0.81</td><td>$0.05</td><td>1.42</td><td>$0.88</td></tr></tbody></table></div><p class="muted">Overfit warning: False</p>
     </section>
 
     <section class="panel span-6">
@@ -685,10 +722,14 @@
         <li>Never commit data/*.txt, data/backtest_logs/, historical CSVs, .env, .venv, cache, or pyc files.</li>
       </ol>
     </section>
+
+    <section class="panel span-12 summary-final">
+      <h2 class="summary-title">SUMMARY</h2><div class="summary-grid"><div><strong>SYSTEM STATUS</strong><span>NOT PROFITABLE</span></div><div><strong>CORE METRICS</strong><span>avg daily 0.00% | PF 2.01 | trades/day 0.05</span></div><div><strong>TARGET VERDICT</strong><span>100/day not_achieved | 5% daily not_achieved | 5-20/day not_achieved</span></div><div><strong>MAIN FAILURE</strong><span>TOO FEW HIGH QUALITY SETUPS</span></div><div><strong>BEST STRATEGY</strong><span>agent_1_momentum_breakout / quality_momentum_expansion / buy trades=48 net=$4.62 PF=2.01 DD=1.25%</span></div><div><strong>FINAL CONCLUSION</strong><span>Over the logged BTCUSDT futures data, the current strategy set has not proven a valid edge after fees, slippage, drawdown, and out-of-sample validation.</span></div></div>
+    </section>
   </main>
 
   <footer class="shell footer">
-    Generated at 2026-05-06 17:46:13 UTC from compact local summary records only.
+    Generated at 2026-05-06 18:14:57 UTC from compact local summary records only.
   </footer>
   </div>
 </body>

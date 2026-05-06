@@ -73,7 +73,7 @@ def main() -> None:
         symbol_filter=args.symbol_filter,
     )
     args.output.parent.mkdir(parents=True, exist_ok=True)
-    args.output.write_text(html, encoding="utf-8")
+    args.output.write_text(strip_trailing_whitespace(html), encoding="utf-8")
     print(f"Dashboard written: {args.output}")
     print(f"Summary records read: {len(records)}")
     print(f"{args.symbol_filter} records shown: {len(filtered)}")
@@ -198,6 +198,10 @@ def render_dashboard(
   </header>
 
   <main class="shell layout">
+    <section class="panel span-12 quick-summary-panel">
+      {render_quick_summary(latest_summary)}
+    </section>
+
     <section class="panel span-12 system-status-panel">
       <div class="section-head">
         <div>
@@ -243,8 +247,20 @@ def render_dashboard(
         {metric_card("Total candles", whole(latest_summary.get("total_candles")), "neutral")}
         {metric_card("Signal window", whole(latest_summary.get("signal_window_bars")), "neutral")}
         {metric_card("Data days", days(latest_summary.get("approx_days")), "neutral")}
+        {metric_card("Data coverage", text_value(latest_summary.get("data_coverage")), "good" if latest_summary.get("uses_full_3_year_dataset") else "warn")}
       </div>
       {render_data_window(latest_summary)}
+    </section>
+
+    <section class="panel span-12">
+      <div class="section-head">
+        <div>
+          <p class="eyebrow">Backtest period</p>
+          <h2>Data Coverage</h2>
+        </div>
+        <span class="tag {('good' if latest_summary.get("uses_full_3_year_dataset") else 'warn')}">{escape(text_value(latest_summary.get("data_coverage")))}</span>
+      </div>
+      {render_data_coverage_block(latest_summary)}
     </section>
 
     <section class="panel span-12 terminal-panel">
@@ -317,6 +333,11 @@ def render_dashboard(
     <section class="panel span-6">
       <h2>Fee / Slippage Drag</h2>
       {render_fee_drag_block(latest_summary)}
+    </section>
+
+    <section class="panel span-6">
+      <h2>Macro / News Filter</h2>
+      {render_macro_filter_block(latest_summary)}
     </section>
 
     <section class="panel span-6">
@@ -395,6 +416,10 @@ def render_dashboard(
         <li>Never commit data/*.txt, data/backtest_logs/, historical CSVs, .env, .venv, cache, or pyc files.</li>
       </ol>
     </section>
+
+    <section class="panel span-12 summary-final">
+      {render_final_summary(latest_summary)}
+    </section>
   </main>
 
   <footer class="shell footer">
@@ -404,6 +429,10 @@ def render_dashboard(
 </body>
 </html>
 """
+
+
+def strip_trailing_whitespace(value: str) -> str:
+    return "\n".join(line.rstrip() for line in value.splitlines()) + "\n"
 
 
 def render_latest_table(records: list[SummaryRecord]) -> str:
@@ -501,6 +530,66 @@ def render_data_window(summary: dict[str, Any]) -> str:
     )
 
 
+def render_quick_summary(summary: dict[str, Any]) -> str:
+    row = safe_dict(summary.get("best_at_least_30")) or safe_dict(summary.get("best_overall"))
+    status = system_status(summary)
+    pf = number(row.get("pf") if row else None)
+    avg_day = percent(summary.get("avg_daily_return_pct"))
+    trades_day = number(summary.get("trades_per_day"))
+    issue = primary_failure_text(summary)
+    text = f"{status} | PF: {pf} | {avg_day}/day | {trades_day} trades/day | Issue: {issue}"
+    return (
+        '<div class="quick-summary">'
+        '<span>Quick glance</span>'
+        f'<strong>{escape(text)}</strong>'
+        '</div>'
+    )
+
+
+def render_data_coverage_block(summary: dict[str, Any]) -> str:
+    if not summary:
+        return '<p class="muted">No data coverage has been logged yet.</p>'
+    warning = text_value(summary.get("data_coverage_warning"))
+    rows = [
+        ("Backtest Period", text_value(summary.get("data_coverage"))),
+        ("Data Start", text_value(summary.get("data_start") or summary.get("data_period_start"))),
+        ("Data End", text_value(summary.get("data_end") or summary.get("data_period_end"))),
+        ("Calendar Days", days(summary.get("backtest_days") or summary.get("approx_days"))),
+        ("Years Covered", number(summary.get("data_years"))),
+        ("Candle Count", whole(summary.get("candle_count") or summary.get("total_candles"))),
+        ("Full 3-Year Dataset", text_value(summary.get("uses_full_3_year_dataset"))),
+    ]
+    warning_html = "" if warning in {"", "n/a"} else f'<p class="warning-line">{escape(warning)}</p>'
+    return warning_html + '<div class="stacked">' + "".join(
+        f'<div><strong>{escape(label)}</strong><span>{escape(value)}</span></div>' for label, value in rows
+    ) + "</div>"
+
+
+def render_macro_filter_block(summary: dict[str, Any]) -> str:
+    macro = safe_dict(summary.get("macro_news_filter"))
+    if not macro:
+        return '<p class="muted">Macro/news filter status is not present in this log.</p>'
+    events = macro.get("events_nearby")
+    event_text = "none"
+    if isinstance(events, list) and events:
+        event_text = "; ".join(
+            f"{safe_dict(event).get('time', 'n/a')} {safe_dict(event).get('impact', 'n/a')} {safe_dict(event).get('event', 'n/a')}"
+            for event in events[:4]
+        )
+    rows = [
+        ("Enabled", text_value(macro.get("enabled"))),
+        ("Paper only", text_value(macro.get("paper_only"))),
+        ("Allow trade", text_value(macro.get("allow_trade"))),
+        ("Risk level", text_value(macro.get("risk_level"))),
+        ("Source", text_value(macro.get("source"))),
+        ("Reason", text_value(macro.get("reason"))),
+        ("Nearby high-impact events", event_text),
+    ]
+    return '<div class="stacked">' + "".join(
+        f'<div><strong>{escape(label)}</strong><span>{escape(value)}</span></div>' for label, value in rows
+    ) + "</div>"
+
+
 def render_daily_target_tape(metrics: dict[str, Any]) -> str:
     if not metrics:
         metrics = {}
@@ -533,6 +622,20 @@ def render_daily_target_tape(metrics: dict[str, Any]) -> str:
             50.0,
             to_float(metrics.get("days_profitable_pct")),
             "calendar basis",
+        )
+        + target_card(
+            "Days above 1%",
+            whole(metrics.get("days_above_1pct")),
+            1.0,
+            to_float(metrics.get("days_above_1pct")),
+            "count",
+        )
+        + target_card(
+            "Days above 2%",
+            whole(metrics.get("days_above_2pct")),
+            1.0,
+            to_float(metrics.get("days_above_2pct")),
+            "count",
         )
         + target_card(
             "Days above 5%",
@@ -701,6 +804,9 @@ def render_timeframe_completion(rows: list[dict[str, Any]]) -> str:
         f"<td>{escape(row['run_status'])}</td>"
         f"<td>{escape(row['candles'])}</td>"
         f"<td>{escape(row['days'])}</td>"
+        f"<td>{escape(row.get('start', 'n/a'))}</td>"
+        f"<td>{escape(row.get('end', 'n/a'))}</td>"
+        f"<td>{escape(row.get('coverage', 'n/a'))}</td>"
         f"<td>{escape(row['latest_run'])}</td>"
         f"<td>{verdict_tag(row['verdict'])}</td>"
         "</tr>"
@@ -709,7 +815,7 @@ def render_timeframe_completion(rows: list[dict[str, Any]]) -> str:
     return (
         '<div class="table-wrap compact"><table><thead><tr>'
         '<th>Timeframe</th><th>Data</th><th>Backtest</th><th>Candles</th>'
-        '<th>Days</th><th>Latest run</th><th>Verdict</th>'
+        '<th>Days</th><th>Start</th><th>End</th><th>Coverage</th><th>Latest run</th><th>Verdict</th>'
         f'</tr></thead><tbody>{body}</tbody></table></div>'
     )
 
@@ -826,6 +932,39 @@ def render_next_tasks(records: list[SummaryRecord]) -> str:
         ]
     )
     return '<ul class="clean">' + "".join(f"<li>{escape(item)}</li>" for item in items) + "</ul>"
+
+
+def render_final_summary(summary: dict[str, Any]) -> str:
+    row = safe_dict(summary.get("best_at_least_30")) or safe_dict(summary.get("best_overall"))
+    status = system_status(summary)
+    issue = primary_failure_text(summary)
+    strategy = "n/a"
+    if row:
+        strategy = (
+            f"{row.get('agent_name', 'n/a')} / {row.get('strategy', 'n/a')} / {row.get('side', 'n/a')} "
+            f"trades={row.get('trades', 'n/a')} net={money(row.get('net'))} PF={number(row.get('pf'))} "
+            f"DD={percent(row.get('max_drawdown_pct'))}"
+        )
+    profitable = status.upper().startswith("PROFITABLE") or "CANDIDATE" in status.upper()
+    conclusion = (
+        "A candidate requires positive net PnL after fees/slippage, PF above 1.1, drawdown at or below 10%, and positive out-of-sample validation."
+        if profitable
+        else "Over the logged BTCUSDT futures data, the current strategy set has not proven a valid edge after fees, slippage, drawdown, and out-of-sample validation."
+    )
+    rows = [
+        ("SYSTEM STATUS", status),
+        ("CORE METRICS", f"avg daily {percent(summary.get('avg_daily_return_pct'))} | PF {number(row.get('pf') if row else None)} | trades/day {number(summary.get('trades_per_day'))}"),
+        ("TARGET VERDICT", f"100/day {text_value(summary.get('verdict_100_trades_per_day'))} | 5% daily {text_value(summary.get('verdict_5pct_daily_target'))} | 5-20/day {text_value(summary.get('verdict_5_to_20_trades_per_day'))}"),
+        ("MAIN FAILURE", issue),
+        ("BEST STRATEGY", strategy),
+        ("FINAL CONCLUSION", conclusion),
+    ]
+    return (
+        '<h2 class="summary-title">SUMMARY</h2>'
+        '<div class="summary-grid">'
+        + "".join(f'<div><strong>{escape(label)}</strong><span>{escape(value)}</span></div>' for label, value in rows)
+        + "</div>"
+    )
 
 
 def render_walk_forward_block(summary: dict[str, Any]) -> str:
@@ -1034,6 +1173,9 @@ def timeframe_completion(records: list[SummaryRecord]) -> list[dict[str, str]]:
                 "run_status": "complete" if latest else "pending",
                 "candles": whole(summary.get("total_candles")),
                 "days": days(summary.get("approx_days")),
+                "start": text_value(summary.get("data_start") or summary.get("data_period_start")),
+                "end": text_value(summary.get("data_end") or summary.get("data_period_end")),
+                "coverage": text_value(summary.get("data_coverage")),
                 "latest_run": latest.run_label if latest else "n/a",
                 "verdict": text_value(summary.get("verdict")),
             }

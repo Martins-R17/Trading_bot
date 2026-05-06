@@ -227,6 +227,9 @@ a {
   color: var(--ink);
   font-size: 12px;
   font-weight: 760;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
 .pill.ok,
@@ -280,6 +283,34 @@ a {
     linear-gradient(180deg, rgba(88, 215, 255, 0.055), transparent 150px),
     linear-gradient(180deg, rgba(255, 255, 255, 0.035), transparent 120px),
     var(--panel);
+}
+
+.quick-summary-panel {
+  border-color: rgba(88, 215, 255, 0.28);
+  background:
+    linear-gradient(90deg, rgba(88, 215, 255, 0.09), transparent 52%),
+    linear-gradient(180deg, rgba(216, 180, 93, 0.05), transparent),
+    var(--panel);
+}
+
+.quick-summary {
+  display: grid;
+  gap: 8px;
+}
+
+.quick-summary span {
+  color: var(--muted);
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.quick-summary strong {
+  color: var(--ink);
+  font-size: clamp(20px, 3.4vw, 34px);
+  line-height: 1.12;
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
 .span-12 {
@@ -359,7 +390,7 @@ h3 {
 
 .target-tape {
   display: grid;
-  grid-template-columns: repeat(7, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
   gap: 12px;
   margin-bottom: 12px;
 }
@@ -585,6 +616,60 @@ tr:last-child td {
   font-size: 13px;
 }
 
+.warning-line {
+  margin: 0 0 12px;
+  color: var(--amber);
+  font-weight: 760;
+}
+
+.summary-final {
+  text-align: center;
+  border-color: rgba(216, 180, 93, 0.34);
+  background:
+    linear-gradient(180deg, rgba(216, 180, 93, 0.11), transparent 180px),
+    var(--panel);
+}
+
+.summary-title {
+  margin: 0 0 20px;
+  font-size: clamp(36px, 7vw, 86px);
+  letter-spacing: 0.08em;
+  color: var(--gold);
+  text-shadow: 0 0 26px rgba(216, 180, 93, 0.25);
+}
+
+.summary-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  text-align: left;
+}
+
+.summary-grid div {
+  padding: 16px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.035);
+}
+
+.summary-grid strong,
+.summary-grid span {
+  display: block;
+}
+
+.summary-grid strong {
+  color: var(--gold);
+  font-size: 12px;
+  letter-spacing: 0.08em;
+}
+
+.summary-grid span {
+  margin-top: 7px;
+  color: var(--ink);
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
 .code,
 .code-inline {
   font-family: Consolas, "Liberation Mono", monospace;
@@ -667,7 +752,8 @@ li + li {
   .target-tape,
   .bar-row,
   .scatter-row,
-  .data-window {
+  .data-window,
+  .summary-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
@@ -691,7 +777,8 @@ li + li {
   .target-tape,
   .bar-row,
   .scatter-row,
-  .data-window {
+  .data-window,
+  .summary-grid {
     grid-template-columns: 1fr;
   }
 

@@ -27,7 +27,7 @@ set "OUTPUT_FILE=data\btc_15m_high_quality_futures_search_%RUN_TS%.txt"
 echo BTCUSDT 15m high-quality lower-frequency futures strategy search.
 echo Backtesting only. Live trading disabled. No real orders. Simulated leverage only.
 echo Uses Binance futures-style fee defaults: maker 0.02%%, taker 0.05%%.
-echo Targets are diagnostics: 5-20 trades/day, 0.5%%-2%% target moves, realistic fees/slippage.
+echo Targets are diagnostics: 5-20 trades/day, 0.3%%-2%% target moves, realistic fees/slippage.
 
 ".\.venv\Scripts\python.exe" -m backtesting.scalping_search ^
   --symbol BTC/USDT ^
