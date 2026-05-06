@@ -424,6 +424,7 @@ def render_latest_table(records: list[SummaryRecord]) -> str:
               <th>Run label</th>
               <th>Timestamp</th>
               <th>Timeframe</th>
+              <th>Profile</th>
               <th>Candles</th>
               <th>Notional</th>
               <th>Calib min net</th>
@@ -431,6 +432,7 @@ def render_latest_table(records: list[SummaryRecord]) -> str:
               <th>Lev</th>
               <th>Liq</th>
               <th>Trades/day</th>
+              <th>5-20/day</th>
               <th>Median day</th>
               <th>Fee drag</th>
               <th>100/day</th>
@@ -438,8 +440,10 @@ def render_latest_table(records: list[SummaryRecord]) -> str:
               <th>WF verdict</th>
               <th>Soft late</th>
               <th>Pos 30+</th>
+              <th>Freq rows</th>
               <th>Best overall</th>
               <th>Best 30+</th>
+              <th>Best 5-20/day</th>
               <th>Verdict</th>
             </tr>
           </thead>
@@ -456,6 +460,7 @@ def render_latest_row(record: SummaryRecord) -> str:
               <td>{escape(record.run_label)}</td>
               <td>{escape(short_timestamp(record.logged_at_utc))}</td>
               <td>{escape(format_list(summary.get("timeframes")))}</td>
+              <td>{escape(text_value(summary.get("quality_profile") or summary.get("mode")))}</td>
               <td>{escape(whole(summary.get("total_candles")))}</td>
               <td>{money(summary.get("diagnostic_notional"))}</td>
               <td>{money(summary.get("calibration_min_expected_net_profit"))}</td>
@@ -463,6 +468,7 @@ def render_latest_row(record: SummaryRecord) -> str:
               <td>{number(summary.get("leverage_used"))}</td>
               <td>{escape(text_value(summary.get("liquidation_events")))}</td>
               <td>{number(summary.get("trades_per_day"))}</td>
+              <td>{escape(text_value(summary.get("verdict_5_to_20_trades_per_day")))}</td>
               <td>{percent(summary.get("median_daily_return_pct"))}</td>
               <td>{percent(summary.get("fee_drag_pct"))}</td>
               <td>{escape(text_value(summary.get("verdict_100_trades_per_day")))}</td>
@@ -470,8 +476,10 @@ def render_latest_row(record: SummaryRecord) -> str:
               <td>{escape(text_value(summary.get("walk_forward_verdict")))}</td>
               <td>{escape(text_value(summary.get("reject_soft_late_momentum")))}</td>
               <td>{escape(text_value(summary.get("positive_combinations_with_at_least_30_trades")))}</td>
+              <td>{escape(text_value(summary.get("combinations_in_frequency_band")))}</td>
               <td>{escape(format_row(summary.get("best_overall")))}</td>
               <td>{escape(format_row(summary.get("best_at_least_30")))}</td>
+              <td>{escape(format_row(summary.get("best_in_5_to_20_trades_per_day")))}</td>
               <td>{verdict_tag(summary.get("verdict"))}</td>
             </tr>"""
 
@@ -483,6 +491,8 @@ def render_data_window(summary: dict[str, Any]) -> str:
         '<div class="data-window">'
         f'<span>Symbols: {escape(format_list(summary.get("symbols")))}</span>'
         f'<span>Timeframes: {escape(format_list(summary.get("timeframes")))}</span>'
+        f'<span>Profile: {escape(text_value(summary.get("quality_profile") or summary.get("mode")))}</span>'
+        f'<span>Frequency target: {number(summary.get("target_trades_per_day_min"))}-{number(summary.get("target_trades_per_day_max"))}/day</span>'
         f'<span>Start: {escape(text_value(summary.get("data_period_start")))}</span>'
         f'<span>End: {escape(text_value(summary.get("data_period_end")))}</span>'
         f'<span>Production target: {number(summary.get("production_min_target_move_bps"))} bps</span>'

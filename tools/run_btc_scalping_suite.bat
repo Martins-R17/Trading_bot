@@ -5,9 +5,9 @@ cd /d "%~dp0.."
 set "PAUSE_ON_EXIT=1"
 if /i "%~1"=="--no-pause" set "PAUSE_ON_EXIT=0"
 
-echo BTCUSDT scalping research suite.
+echo BTCUSDT high-quality futures strategy research suite.
 echo Backtesting only. Live trading disabled. No leverage. BTC only.
-echo Runs 15m first, then 5m. 1m is intentionally not run here because 3-year 1m is large.
+echo Runs 15m first, then 5m. Use run_btc_scalping_1m.bat --confirm-large-1m for the larger 1m run.
 
 call "%~dp0run_btc_scalping_15m.bat" --no-pause
 if not "%ERRORLEVEL%"=="0" (

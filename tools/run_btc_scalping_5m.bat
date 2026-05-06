@@ -21,20 +21,21 @@ if not exist "data" mkdir "data"
 if not exist "data\backtest_logs" mkdir "data\backtest_logs"
 
 for /f %%i in ('powershell -NoProfile -Command "Get-Date -Format yyyyMMdd_HHmmss"') do set "RUN_TS=%%i"
-set "RUN_LABEL=btc_5m_fast_futures_scalping_agents_%RUN_TS%"
-set "OUTPUT_FILE=data\btc_5m_fast_futures_scalping_agents_%RUN_TS%.txt"
+set "RUN_LABEL=btc_5m_high_quality_futures_search_%RUN_TS%"
+set "OUTPUT_FILE=data\btc_5m_high_quality_futures_search_%RUN_TS%.txt"
 
-echo BTCUSDT 5m fast futures scalping agent search.
+echo BTCUSDT 5m high-quality lower-frequency futures strategy search.
 echo Backtesting only. Live trading disabled. No real orders. Simulated leverage only.
 echo Uses Binance futures-style fee defaults: maker 0.02%%, taker 0.05%%.
-echo Targets are diagnostics: 100 trades/day, 5%% avg daily return, 75%% days above 5%%.
+echo Targets are diagnostics: 5-20 trades/day, 0.5%%-2%% target moves, realistic fees/slippage.
 
 ".\.venv\Scripts\python.exe" -m backtesting.scalping_search ^
   --symbol BTC/USDT ^
   --timeframe 5m ^
+  --quality-profile high_quality ^
   --data-dir data\historical_3y_5m ^
   --simulated-leverage 1 ^
-  --max-parameter-sets 120 ^
+  --max-parameter-sets 0 ^
   --save-summary-log ^
   --run-label "%RUN_LABEL%" ^
   > "%OUTPUT_FILE%"

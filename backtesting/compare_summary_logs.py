@@ -117,6 +117,7 @@ def print_table(records: list[dict[str, Any]], path: Path, ignored_count: int = 
         ("Timestamp", 19),
         ("Symbols", 10),
         ("Tf", 8),
+        ("Profile", 12),
         ("Candles", 9),
         ("Window", 7),
         ("Notional", 10),
@@ -125,6 +126,7 @@ def print_table(records: list[dict[str, Any]], path: Path, ignored_count: int = 
         ("Lev", 6),
         ("Liq", 5),
         ("TPD", 8),
+        ("5-20/day", 14),
         ("MedDay%", 9),
         ("FeeDrag%", 9),
         ("100/day", 16),
@@ -134,8 +136,10 @@ def print_table(records: list[dict[str, Any]], path: Path, ignored_count: int = 
         ("Total", 7),
         ("Pos", 5),
         ("Pos30", 7),
+        ("FreqRows", 8),
         ("BestOverall", 48),
         ("Best30", 48),
+        ("Best5-20/day", 48),
         ("Verdict", 34),
     )
     print(" ".join(f"{name:<{width}}" for name, width in columns))
@@ -147,6 +151,7 @@ def print_table(records: list[dict[str, Any]], path: Path, ignored_count: int = 
             truncate(str(record.get("logged_at_utc") or "n/a"), 19),
             truncate(format_list(summary.get("symbols")), 10),
             truncate(format_list(summary.get("timeframes")), 8),
+            truncate(str(summary.get("quality_profile") or summary.get("mode") or "n/a"), 12),
             str(summary.get("total_candles", "n/a")),
             str(summary.get("signal_window_bars", "n/a")),
             format_money(summary.get("diagnostic_notional")),
@@ -155,6 +160,7 @@ def print_table(records: list[dict[str, Any]], path: Path, ignored_count: int = 
             format_number(summary.get("leverage_used")),
             str(summary.get("liquidation_events", "n/a")),
             format_number(summary.get("trades_per_day")),
+            truncate(str(summary.get("verdict_5_to_20_trades_per_day") or "n/a"), 14),
             format_percent(summary.get("median_daily_return_pct")),
             format_percent(summary.get("fee_drag_pct")),
             truncate(str(summary.get("verdict_100_trades_per_day") or "n/a"), 16),
@@ -164,8 +170,10 @@ def print_table(records: list[dict[str, Any]], path: Path, ignored_count: int = 
             str(summary.get("total_combinations", "n/a")),
             str(summary.get("positive_combinations", "n/a")),
             str(summary.get("positive_combinations_with_at_least_30_trades", "n/a")),
+            str(summary.get("combinations_in_frequency_band", "n/a")),
             truncate(format_best(summary.get("best_overall")), 48),
             truncate(format_best(summary.get("best_at_least_30")), 48),
+            truncate(format_best(summary.get("best_in_5_to_20_trades_per_day")), 48),
             truncate(str(summary.get("verdict") or "n/a"), 34),
         )
         print(" ".join(f"{value:<{width}}" for value, (_, width) in zip(values, columns)))
