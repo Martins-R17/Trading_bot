@@ -11,7 +11,7 @@ if not exist ".\.venv\Scripts\python.exe" (
   exit /b 1
 )
 
-".\.venv\Scripts\python.exe" -m backtesting.compare_summary_logs --last 10 --symbol-filter BTC/USDT
+".\.venv\Scripts\python.exe" tools\verify_btc_3y_data.py
 set "EXIT_CODE=%ERRORLEVEL%"
 
 if "%PAUSE_ON_EXIT%"=="1" pause

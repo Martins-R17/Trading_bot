@@ -142,6 +142,7 @@ def render_dashboard(
     worst_overall = worst_row(records, "worst_overall")
     verdict_counts = count_values(records, "verdict")
     tf_rows = timeframe_rows(records)
+    tf_completion = timeframe_completion(records)
     strategy_rows = strategy_rows_from_records(records)
     legacy_records = len(all_records) - len(records)
 
@@ -227,6 +228,16 @@ def render_dashboard(
       {render_latest_table(latest)}
     </section>
 
+    <section class="panel span-12">
+      <div class="section-head">
+        <div>
+          <p class="eyebrow">3-year workflow</p>
+          <h2>Timeframe Completion</h2>
+        </div>
+      </div>
+      {render_timeframe_completion(tf_completion)}
+    </section>
+
     <section class="panel span-4">
       <h2>Best Overall</h2>
       {render_result_box(best_overall)}
@@ -253,6 +264,16 @@ def render_dashboard(
     </section>
 
     <section class="panel span-6">
+      <h2>Performance Summary</h2>
+      {render_performance_table(latest_summary)}
+    </section>
+
+    <section class="panel span-6">
+      <h2>Cluster Diagnostics</h2>
+      {render_cluster_block(latest_summary)}
+    </section>
+
+    <section class="panel span-6">
       <h2>Momentum Diagnostics</h2>
       {render_momentum_block(latest_summary)}
     </section>
@@ -264,12 +285,7 @@ def render_dashboard(
 
     <section class="panel span-6">
       <h2>Walk-Forward Validation</h2>
-      <ul class="clean">
-        <li>Status: not complete yet for full 3-year BTC data.</li>
-        <li>Acceptance requires positive out-of-sample net PnL after fees and slippage.</li>
-        <li>Minimum bar: 30 trades; preferred bar: 100+ trades with stable PF and drawdown.</li>
-        <li>Overfit warning remains active until train/validation/test or walk-forward results agree.</li>
-      </ul>
+      {render_walk_forward_block(latest_summary)}
     </section>
 
     <section class="panel span-6">
@@ -299,7 +315,7 @@ def render_dashboard(
 
     <section class="panel span-6">
       <h2>Local Workflow</h2>
-      <div class="code">tools\\run_btc_15m_3y_backtest.bat<br>tools\\run_btc_5m_3y_backtest.bat<br>tools\\run_btc_1m_3y_backtest.bat<br>tools\\run_btc_optimization_suite.bat<br>tools\\compare_logs.bat<br>tools\\update_dashboard.bat<br>tools\\safe_git_status.bat</div>
+      <div class="code">tools\\download_btc_3y_data.bat<br>tools\\verify_btc_3y_data.bat<br>tools\\run_btc_15m_3y_backtest.bat<br>tools\\run_btc_5m_3y_backtest.bat<br>tools\\run_btc_1m_3y_backtest.bat<br>tools\\run_btc_optimization_suite.bat<br>tools\\compare_logs.bat<br>tools\\update_dashboard.bat<br>tools\\safe_git_status.bat</div>
       <p class="muted">Backtest helpers write ignored local files under data/. The dashboard generator publishes compact, non-secret HTML under docs/.</p>
     </section>
 
@@ -344,6 +360,7 @@ def render_latest_table(records: list[SummaryRecord]) -> str:
               <th>Candles</th>
               <th>Notional</th>
               <th>Calib min net</th>
+              <th>WF verdict</th>
               <th>Soft late</th>
               <th>Pos 30+</th>
               <th>Best overall</th>
@@ -367,6 +384,7 @@ def render_latest_row(record: SummaryRecord) -> str:
               <td>{escape(whole(summary.get("total_candles")))}</td>
               <td>{money(summary.get("diagnostic_notional"))}</td>
               <td>{money(summary.get("calibration_min_expected_net_profit"))}</td>
+              <td>{escape(text_value(summary.get("walk_forward_verdict")))}</td>
               <td>{escape(text_value(summary.get("reject_soft_late_momentum")))}</td>
               <td>{escape(text_value(summary.get("positive_combinations_with_at_least_30_trades")))}</td>
               <td>{escape(format_row(summary.get("best_overall")))}</td>
@@ -390,6 +408,27 @@ def render_data_window(summary: dict[str, Any]) -> str:
     )
 
 
+def render_timeframe_completion(rows: list[dict[str, Any]]) -> str:
+    body = "".join(
+        "<tr>"
+        f"<td>{escape(row['timeframe'])}</td>"
+        f"<td>{escape(row['data_status'])}</td>"
+        f"<td>{escape(row['run_status'])}</td>"
+        f"<td>{escape(row['candles'])}</td>"
+        f"<td>{escape(row['days'])}</td>"
+        f"<td>{escape(row['latest_run'])}</td>"
+        f"<td>{verdict_tag(row['verdict'])}</td>"
+        "</tr>"
+        for row in rows
+    )
+    return (
+        '<div class="table-wrap compact"><table><thead><tr>'
+        '<th>Timeframe</th><th>Data</th><th>Backtest</th><th>Candles</th>'
+        '<th>Days</th><th>Latest run</th><th>Verdict</th>'
+        f'</tr></thead><tbody>{body}</tbody></table></div>'
+    )
+
+
 def render_result_box(row: dict[str, Any] | None) -> str:
     if not row:
         return '<p class="muted">n/a</p>'
@@ -404,6 +443,39 @@ def render_result_box(row: dict[str, Any] | None) -> str:
 """
 
 
+def render_performance_table(summary: dict[str, Any]) -> str:
+    rows = [
+        ("Best overall", safe_dict(summary.get("best_overall"))),
+        ("Best 30+", safe_dict(summary.get("best_at_least_30"))),
+        ("Worst overall", safe_dict(summary.get("worst_overall"))),
+    ]
+    body = ""
+    for label, row in rows:
+        if not row:
+            body += f"<tr><td>{escape(label)}</td><td colspan=\"9\">n/a</td></tr>"
+            continue
+        body += (
+            "<tr>"
+            f"<td>{escape(label)}</td>"
+            f"<td>{escape(str(row.get('strategy', 'n/a')))}</td>"
+            f"<td>{escape(text_value(row.get('trades')))}</td>"
+            f"<td>{money(row.get('net'))}</td>"
+            f"<td>{money(row.get('avg_net'))}</td>"
+            f"<td>{number(row.get('pf'))}</td>"
+            f"<td>{number(row.get('win_rate'))}%</td>"
+            f"<td>{money(row.get('costs'))}</td>"
+            f"<td>{money(row.get('max_drawdown'))}</td>"
+            f"<td>{number(row.get('stop_loss_hit_rate'))}% / {number(row.get('take_profit_hit_rate'))}%</td>"
+            "</tr>"
+        )
+    return (
+        '<div class="table-wrap compact"><table><thead><tr>'
+        '<th>Row</th><th>Strategy</th><th>Trades</th><th>Net</th><th>Avg</th>'
+        '<th>PF</th><th>Win</th><th>Costs</th><th>Max DD</th><th>SL / TP</th>'
+        f'</tr></thead><tbody>{body}</tbody></table></div>'
+    )
+
+
 def render_quality_block(summary: dict[str, Any]) -> str:
     if not summary:
         return '<p class="muted">No quality diagnostics available yet.</p>'
@@ -414,6 +486,23 @@ def render_quality_block(summary: dict[str, Any]) -> str:
             f"<h3>Soft-late rejections</h3><p>{escape(format_soft_rejections(summary.get('soft_late_rejections')))}</p>",
         ]
     )
+
+
+def render_cluster_block(summary: dict[str, Any]) -> str:
+    if not summary:
+        return '<p class="muted">No cluster diagnostics available yet.</p>'
+    rows = [
+        ("Best momentum", format_momentum_cluster(summary.get("best_momentum_cluster"))),
+        ("Worst momentum", format_momentum_cluster(summary.get("worst_momentum_cluster"))),
+        ("Best buy entry", format_entry_cluster(summary.get("best_buy_entry_momentum_cluster"))),
+        ("Worst buy entry", format_entry_cluster(summary.get("worst_buy_entry_momentum_cluster"))),
+        ("Best sell entry", format_entry_cluster(summary.get("best_sell_entry_momentum_cluster"))),
+        ("Worst sell entry", format_entry_cluster(summary.get("worst_sell_entry_momentum_cluster"))),
+    ]
+    warning = '<p class="muted">Cluster rows can have small sample sizes; do not promote filters from tiny clusters.</p>'
+    return warning + '<div class="stacked">' + "".join(
+        f'<div><strong>{escape(label)}</strong><span>{escape(value)}</span></div>' for label, value in rows
+    ) + "</div>"
 
 
 def render_momentum_block(summary: dict[str, Any]) -> str:
@@ -446,12 +535,41 @@ def render_next_tasks(records: list[SummaryRecord]) -> str:
         items.append("Do not run BTC 1m until runtime is acceptable; 1m is much larger than 5m.")
     items.extend(
         [
-            "Add walk-forward splits before promoting any strategy rule.",
+            "Add rolling walk-forward optimization after the current chronological split diagnostics.",
             "Investigate breakout and momentum failures by entry-only clusters, fees, and stop-loss hit rate.",
             "Keep scalping microstructure disabled by default unless backtest-only evidence improves.",
         ]
     )
     return '<ul class="clean">' + "".join(f"<li>{escape(item)}</li>" for item in items) + "</ul>"
+
+
+def render_walk_forward_block(summary: dict[str, Any]) -> str:
+    row = safe_dict(summary.get("best_at_least_30"))
+    if not row:
+        return '<p class="muted">No 30+ trade candidate available for chronological split validation.</p>'
+    splits = row.get("walk_forward")
+    if not isinstance(splits, list) or not splits:
+        return '<p class="muted">Walk-forward split data is not present in this log. Re-run calibration with the latest code.</p>'
+    body = "".join(
+        "<tr>"
+        f"<td>{escape(text_value(split.get('split')))}</td>"
+        f"<td>{escape(text_value(split.get('trades')))}</td>"
+        f"<td>{money(split.get('net'))}</td>"
+        f"<td>{money(split.get('avg_net'))}</td>"
+        f"<td>{number(split.get('pf'))}</td>"
+        f"<td>{money(split.get('max_drawdown'))}</td>"
+        "</tr>"
+        for split in splits
+        if isinstance(split, dict)
+    )
+    return (
+        f"<p class=\"muted\">Verdict: {escape(text_value(row.get('walk_forward_verdict')))}. "
+        "This is a chronological train/validation/test split, not a rolling optimizer.</p>"
+        '<div class="table-wrap compact"><table><thead><tr>'
+        '<th>Split</th><th>Trades</th><th>Net</th><th>Avg</th><th>PF</th><th>Max DD</th>'
+        f'</tr></thead><tbody>{body}</tbody></table></div>'
+        f"<p class=\"muted\">Overfit warning: {escape(text_value(summary.get('overfit_warning')))}</p>"
+    )
 
 
 def render_rejection_list(value: Any) -> str:
@@ -537,6 +655,30 @@ def timeframe_rows(records: list[SummaryRecord]) -> list[tuple[str, str, str, st
                 number(best.get("pf") if best else None),
                 format_row(best_30),
             )
+        )
+    return rows
+
+
+def timeframe_completion(records: list[SummaryRecord]) -> list[dict[str, str]]:
+    rows: list[dict[str, str]] = []
+    for timeframe in ("15m", "5m", "1m"):
+        matching = [
+            record for record in records
+            if timeframe in normalize_list(record.summary.get("timeframes"))
+        ]
+        latest = matching[-1] if matching else None
+        path = Path(f"data/historical_3y_{timeframe}/BTCUSDT_{timeframe}.csv")
+        summary = latest.summary if latest else {}
+        rows.append(
+            {
+                "timeframe": timeframe,
+                "data_status": "present" if path.exists() else "missing",
+                "run_status": "complete" if latest else "pending",
+                "candles": whole(summary.get("total_candles")),
+                "days": days(summary.get("approx_days")),
+                "latest_run": latest.run_label if latest else "n/a",
+                "verdict": text_value(summary.get("verdict")),
+            }
         )
     return rows
 
@@ -636,6 +778,19 @@ def format_entry_cluster(value: Any) -> str:
         f"net={money(row.get('net'))} avg={money(row.get('avg_net'))} pf={number(row.get('pf'))} "
         f"rsi={row.get('rsi_band', 'n/a')} macd={row.get('macd_band', 'n/a')} "
         f"trend={row.get('trend_regime', 'n/a')} close={row.get('close_position_band', 'n/a')}"
+    )
+
+
+def format_momentum_cluster(value: Any) -> str:
+    row = safe_dict(value)
+    if not row:
+        return "n/a"
+    return (
+        f"{row.get('side', 'n/a')} exit={row.get('exit_reason', 'n/a')} "
+        f"trades={row.get('trades', 'n/a')} net={money(row.get('net'))} "
+        f"avg={money(row.get('avg_net'))} pf={number(row.get('pf'))} "
+        f"rsi={row.get('rsi_band', 'n/a')} macd={row.get('macd_band', 'n/a')} "
+        f"trend={row.get('trend_regime', 'n/a')} volume={row.get('volume_band', 'n/a')}"
     )
 
 

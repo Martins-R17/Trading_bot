@@ -30,15 +30,21 @@ def parse_args() -> argparse.Namespace:
         type=int,
         help="Show only the last N records after sorting newest last.",
     )
+    parser.add_argument(
+        "--symbol-filter",
+        default="BTC/USDT",
+        help="Only show records whose compact summary symbols exactly match this symbol. Default: BTC/USDT.",
+    )
     return parser.parse_args()
 
 
 def main() -> None:
     args = parse_args()
-    records = load_records(args.path)
+    all_records = load_records(args.path)
+    records = filter_records_by_symbol(all_records, args.symbol_filter)
     if args.last is not None:
         records = records[-max(args.last, 0) :]
-    print_table(records, args.path)
+    print_table(records, args.path, ignored_count=max(len(all_records) - len(filter_records_by_symbol(all_records, args.symbol_filter)), 0), symbol_filter=args.symbol_filter)
 
 
 def load_records(path: Path) -> list[dict[str, Any]]:
@@ -69,6 +75,18 @@ def load_records(path: Path) -> list[dict[str, Any]]:
     return sorted(records, key=record_sort_key)
 
 
+def filter_records_by_symbol(records: list[dict[str, Any]], symbol: str) -> list[dict[str, Any]]:
+    if not symbol:
+        return records
+    filtered: list[dict[str, Any]] = []
+    for record in records:
+        summary = safe_dict(record.get("summary"))
+        symbols = format_list(summary.get("symbols")).split(",")
+        if [item.strip() for item in symbols if item.strip() and item.strip() != "n/a"] == [symbol]:
+            filtered.append(record)
+    return filtered
+
+
 def record_sort_key(record: dict[str, Any]) -> tuple[datetime, int]:
     timestamp = parse_timestamp(str(record.get("logged_at_utc", "")))
     line_number = int(record.get("_line_number", 0) or 0)
@@ -86,8 +104,10 @@ def parse_timestamp(raw: str) -> datetime:
     return parsed.replace(tzinfo=None)
 
 
-def print_table(records: list[dict[str, Any]], path: Path) -> None:
+def print_table(records: list[dict[str, Any]], path: Path, ignored_count: int = 0, symbol_filter: str = "") -> None:
     print(f"Realized Sweep Summary Log: {path}")
+    if symbol_filter:
+        print(f"symbol_filter={symbol_filter} ignored_non_matching_records={ignored_count}")
     if not records:
         print("No records found.")
         return
@@ -101,6 +121,7 @@ def print_table(records: list[dict[str, Any]], path: Path) -> None:
         ("Window", 7),
         ("Notional", 10),
         ("CalibNet", 10),
+        ("WF", 24),
         ("SoftLate", 9),
         ("Total", 7),
         ("Pos", 5),
@@ -122,6 +143,7 @@ def print_table(records: list[dict[str, Any]], path: Path) -> None:
             str(summary.get("signal_window_bars", "n/a")),
             format_money(summary.get("diagnostic_notional")),
             format_money(summary.get("calibration_min_expected_net_profit")),
+            truncate(str(summary.get("walk_forward_verdict") or "n/a"), 24),
             truncate(str(summary.get("reject_soft_late_momentum") or "n/a"), 9),
             str(summary.get("total_combinations", "n/a")),
             str(summary.get("positive_combinations", "n/a")),

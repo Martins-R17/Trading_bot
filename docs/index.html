@@ -26,7 +26,7 @@
       <div class="hero-card">
         <span>Latest verdict</span>
         <strong>not_profitable_at_30_trades</strong>
-        <small>Generated 2026-05-06 09:44:48 UTC</small>
+        <small>Generated 2026-05-06 10:30:48 UTC</small>
       </div>
     </div>
   </header>
@@ -82,7 +82,7 @@
         
         <div class="metric">
           <div class="label">BTC records</div>
-          <div class="value neutral" data-count="2">2</div>
+          <div class="value neutral" data-count="3">3</div>
         </div>
         
         <div class="metric">
@@ -102,7 +102,7 @@
         
         <div class="metric">
           <div class="label">Total candles</div>
-          <div class="value neutral" data-count="315360">315,360</div>
+          <div class="value neutral" data-count="105120">105,120</div>
         </div>
         
         <div class="metric">
@@ -115,7 +115,7 @@
           <div class="value neutral" data-count="1095.0">1,095.0</div>
         </div>
       </div>
-      <div class="data-window"><span>Symbols: BTC/USDT</span><span>Timeframes: 5m</span><span>Start: 2023-05-07T09:25:00+00:00</span><span>End: 2026-05-06T09:20:00+00:00</span><span>Production target: 75.00 bps</span><span>Production reward/cost: 3.00x</span></div>
+      <div class="data-window"><span>Symbols: BTC/USDT</span><span>Timeframes: 15m</span><span>Start: 2023-05-07T08:15:00+00:00</span><span>End: 2026-05-06T08:00:00+00:00</span><span>Production target: 75.00 bps</span><span>Production reward/cost: 3.00x</span></div>
     </section>
 
     <section class="panel span-12">
@@ -136,6 +136,7 @@
               <th>Candles</th>
               <th>Notional</th>
               <th>Calib min net</th>
+              <th>WF verdict</th>
               <th>Soft late</th>
               <th>Pos 30+</th>
               <th>Best overall</th>
@@ -151,6 +152,7 @@
               <td>105,120</td>
               <td>$100.00</td>
               <td>$0.25</td>
+              <td>n/a</td>
               <td>enabled</td>
               <td>0</td>
               <td>BTC/USDT breakout target=75.00bps hold=16 trades=395 net=$-103.32 pf=0.51</td>
@@ -165,15 +167,41 @@
               <td>315,360</td>
               <td>$100.00</td>
               <td>$0.25</td>
+              <td>n/a</td>
               <td>enabled</td>
               <td>0</td>
               <td>BTC/USDT breakout target=75.00bps hold=16 trades=474 net=$-132.97 pf=0.41</td>
               <td>BTC/USDT breakout target=75.00bps hold=16 trades=474 net=$-132.97 pf=0.41</td>
               <td><span class="tag bad">not_profitable_at_30_trades</span></td>
+            </tr>
+
+            <tr>
+              <td>btc_15m_3y_single_baseline_20260506_110944</td>
+              <td>2026-05-06 10:13:36</td>
+              <td>15m</td>
+              <td>105,120</td>
+              <td>$100.00</td>
+              <td>$0.25</td>
+              <td>not_profitable_out_of_sample</td>
+              <td>enabled</td>
+              <td>0</td>
+              <td>BTC/USDT breakout target=75.00bps hold=16 trades=395 net=$-103.32 pf=0.51</td>
+              <td>BTC/USDT breakout target=75.00bps hold=16 trades=395 net=$-103.32 pf=0.51</td>
+              <td><span class="tag bad">not_profitable_at_30_trades</span></td>
             </tr></tbody>
         </table>
       </div>
 
+    </section>
+
+    <section class="panel span-12">
+      <div class="section-head">
+        <div>
+          <p class="eyebrow">3-year workflow</p>
+          <h2>Timeframe Completion</h2>
+        </div>
+      </div>
+      <div class="table-wrap compact"><table><thead><tr><th>Timeframe</th><th>Data</th><th>Backtest</th><th>Candles</th><th>Days</th><th>Latest run</th><th>Verdict</th></tr></thead><tbody><tr><td>15m</td><td>present</td><td>complete</td><td>105,120</td><td>1,095.0</td><td>btc_15m_3y_single_baseline_20260506_110944</td><td><span class="tag bad">not_profitable_at_30_trades</span></td></tr><tr><td>5m</td><td>present</td><td>complete</td><td>315,360</td><td>1,095.0</td><td>btc_5m_3y_single_baseline_20260506_102421</td><td><span class="tag bad">not_profitable_at_30_trades</span></td></tr><tr><td>1m</td><td>present</td><td>pending</td><td>n/a</td><td>n/a</td><td>n/a</td><td><span class="tag neutral">n/a</span></td></tr></tbody></table></div>
     </section>
 
     <section class="panel span-4">
@@ -217,34 +245,39 @@
 
     <section class="panel span-6">
       <h2>Timeframe Comparison</h2>
-      <div class="table-wrap compact"><table><thead><tr><th>Timeframe</th><th>Runs</th><th>Best net</th><th>Best PF</th><th>Best 30+</th></tr></thead><tbody><tr><td>15m</td><td>1</td><td>$-103.32</td><td>0.51</td><td>BTC/USDT breakout target=75.00bps hold=16 trades=395 net=$-103.32 pf=0.51</td></tr><tr><td>5m</td><td>1</td><td>$-132.97</td><td>0.41</td><td>BTC/USDT breakout target=75.00bps hold=16 trades=474 net=$-132.97 pf=0.41</td></tr></tbody></table></div>
+      <div class="table-wrap compact"><table><thead><tr><th>Timeframe</th><th>Runs</th><th>Best net</th><th>Best PF</th><th>Best 30+</th></tr></thead><tbody><tr><td>15m</td><td>2</td><td>$-103.32</td><td>0.51</td><td>BTC/USDT breakout target=75.00bps hold=16 trades=395 net=$-103.32 pf=0.51</td></tr><tr><td>5m</td><td>1</td><td>$-132.97</td><td>0.41</td><td>BTC/USDT breakout target=75.00bps hold=16 trades=474 net=$-132.97 pf=0.41</td></tr></tbody></table></div>
     </section>
 
     <section class="panel span-6">
       <h2>Strategy Comparison</h2>
-      <div class="table-wrap compact"><table><thead><tr><th>Strategy</th><th>Rows</th><th>Best net</th><th>Best PF</th><th>Best 30+</th></tr></thead><tbody><tr><td>breakout</td><td>4</td><td>$-103.32</td><td>0.51</td><td>BTC/USDT breakout target=75.00bps hold=16 trades=395 net=$-103.32 pf=0.51</td></tr><tr><td>momentum</td><td>2</td><td>$-146.70</td><td>0.59</td><td>BTC/USDT momentum target=75.00bps hold=16 trades=694 net=$-146.70 pf=0.59</td></tr></tbody></table></div>
+      <div class="table-wrap compact"><table><thead><tr><th>Strategy</th><th>Rows</th><th>Best net</th><th>Best PF</th><th>Best 30+</th></tr></thead><tbody><tr><td>breakout</td><td>6</td><td>$-103.32</td><td>0.51</td><td>BTC/USDT breakout target=75.00bps hold=16 trades=395 net=$-103.32 pf=0.51</td></tr><tr><td>momentum</td><td>3</td><td>$-146.70</td><td>0.59</td><td>BTC/USDT momentum target=75.00bps hold=16 trades=694 net=$-146.70 pf=0.59</td></tr></tbody></table></div>
+    </section>
+
+    <section class="panel span-6">
+      <h2>Performance Summary</h2>
+      <div class="table-wrap compact"><table><thead><tr><th>Row</th><th>Strategy</th><th>Trades</th><th>Net</th><th>Avg</th><th>PF</th><th>Win</th><th>Costs</th><th>Max DD</th><th>SL / TP</th></tr></thead><tbody><tr><td>Best overall</td><td>breakout</td><td>395</td><td>$-103.32</td><td>$-0.26</td><td>0.51</td><td>29.37%</td><td>$94.78</td><td>$103.32</td><td>52.15% / 20.00%</td></tr><tr><td>Best 30+</td><td>breakout</td><td>395</td><td>$-103.32</td><td>$-0.26</td><td>0.51</td><td>29.37%</td><td>$94.78</td><td>$103.32</td><td>52.15% / 20.00%</td></tr><tr><td>Worst overall</td><td>momentum</td><td>694</td><td>$-146.70</td><td>$-0.21</td><td>0.59</td><td>33.86%</td><td>$166.57</td><td>$150.17</td><td>48.41% / 22.33%</td></tr></tbody></table></div>
+    </section>
+
+    <section class="panel span-6">
+      <h2>Cluster Diagnostics</h2>
+      <p class="muted">Cluster rows can have small sample sizes; do not promote filters from tiny clusters.</p><div class="stacked"><div><strong>Best momentum</strong><span>sell exit=take_profit_hit trades=6 net=$5.07 avg=$0.84 pf=inf rsi=32-36 macd=neg_strong trend=strong_extended volume=1.50-2.00</span></div><div><strong>Worst momentum</strong><span>sell exit=stop_loss_hit trades=6 net=$-6.55 avg=$-1.09 pf=0.00 rsi=28-32 macd=neg_strong trend=strong_extended volume=&gt;2.00</span></div><div><strong>Best buy entry</strong><span>buy trades=1 wins=1 net=$3.64 avg=$3.64 pf=inf rsi=64-68 macd=pos_strong trend=strong_extended close=0.75-0.90</span></div><div><strong>Worst buy entry</strong><span>buy trades=13 wins=4 net=$-4.89 avg=$-0.38 pf=0.34 rsi=55-64 macd=pos_strong trend=strong_extended close=&gt;0.90</span></div><div><strong>Best sell entry</strong><span>sell trades=3 wins=2 net=$7.12 avg=$2.37 pf=9.98 rsi=28-32 macd=neg_strong trend=strong_extended close=0.25-0.40</span></div><div><strong>Worst sell entry</strong><span>sell trades=7 wins=0 net=$-6.86 avg=$-0.98 pf=0.00 rsi=28-32 macd=neg_strong trend=strong_extended close=0.25-0.40</span></div></div>
     </section>
 
     <section class="panel span-6">
       <h2>Momentum Diagnostics</h2>
-      <div class="stacked"><div><strong>Buy momentum</strong><span>trades=305 net=$-67.37 avg=$-0.22 pf=0.48</span></div><div><strong>Sell momentum</strong><span>trades=379 net=$-80.71 avg=$-0.21 pf=0.57</span></div><div><strong>Best entry-only cluster</strong><span>buy trades=2 wins=2 net=$3.61 avg=$1.81 pf=inf rsi=64-68 macd=pos_strong trend=strong_extended close=0.60-0.75</span></div><div><strong>Best 30+ entry-only cluster</strong><span>n/a</span></div><div><strong>Worst entry-only cluster</strong><span>buy trades=10 wins=1 net=$-4.93 avg=$-0.49 pf=0.16 rsi=64-68 macd=pos_strong trend=strong_extended close=0.60-0.75</span></div></div>
+      <div class="stacked"><div><strong>Buy momentum</strong><span>trades=335 net=$-66.83 avg=$-0.20 pf=0.58</span></div><div><strong>Sell momentum</strong><span>trades=359 net=$-79.87 avg=$-0.22 pf=0.60</span></div><div><strong>Best entry-only cluster</strong><span>sell trades=3 wins=2 net=$7.12 avg=$2.37 pf=9.98 rsi=28-32 macd=neg_strong trend=strong_extended close=0.25-0.40</span></div><div><strong>Best 30+ entry-only cluster</strong><span>n/a</span></div><div><strong>Worst entry-only cluster</strong><span>sell trades=7 wins=0 net=$-6.86 avg=$-0.98 pf=0.00 rsi=28-32 macd=neg_strong trend=strong_extended close=0.25-0.40</span></div></div>
     </section>
 
     <section class="panel span-6">
       <h2>Quality Diagnostics</h2>
-      <h3>Top quality rejections</h3><ul class="clean"><li>volatility_expansion_not_confirmed: 3815</li><li>volume_expansion_not_confirmed: 3662</li><li>trend_regime_not_clear: 3181</li><li>extreme_rsi_short: 1978</li><li>extreme_rsi_long: 1817</li><li>rejected_soft_late_short: 1535</li><li>bearish_close_not_confirmed: 1302</li><li>exhausted_short: 1283</li></ul>
-<h3>Top accepted loser cluster</h3><p>sell momentum exit=stop_loss_hit count=11 net=$-11.65 rsi=28-32 close=0.25-0.40 hold=6-10 label=none</p>
-<h3>Soft-late rejections</h3><p>long=1266 | short=1535</p>
+      <h3>Top quality rejections</h3><ul class="clean"><li>volatility_expansion_not_confirmed: 4994</li><li>volume_expansion_not_confirmed: 4048</li><li>trend_regime_not_clear: 3555</li><li>exhausted_short: 1557</li><li>extreme_rsi_short: 1400</li><li>rejected_soft_late_short: 1376</li><li>exhausted_long: 1363</li><li>rejected_soft_late_long: 1362</li></ul>
+<h3>Top accepted loser cluster</h3><p>sell momentum exit=stop_loss_hit count=16 net=$-17.65 rsi=36-45 close=0.25-0.40 hold=6-10 label=none</p>
+<h3>Soft-late rejections</h3><p>long=1362 | short=1376</p>
     </section>
 
     <section class="panel span-6">
       <h2>Walk-Forward Validation</h2>
-      <ul class="clean">
-        <li>Status: not complete yet for full 3-year BTC data.</li>
-        <li>Acceptance requires positive out-of-sample net PnL after fees and slippage.</li>
-        <li>Minimum bar: 30 trades; preferred bar: 100+ trades with stable PF and drawdown.</li>
-        <li>Overfit warning remains active until train/validation/test or walk-forward results agree.</li>
-      </ul>
+      <p class="muted">Verdict: not_profitable_out_of_sample. This is a chronological train/validation/test split, not a rolling optimizer.</p><div class="table-wrap compact"><table><thead><tr><th>Split</th><th>Trades</th><th>Net</th><th>Avg</th><th>PF</th><th>Max DD</th></tr></thead><tbody><tr><td>train</td><td>74</td><td>$-18.92</td><td>$-0.26</td><td>0.53</td><td>$21.10</td></tr><tr><td>validation</td><td>173</td><td>$-61.22</td><td>$-0.35</td><td>0.41</td><td>$61.82</td></tr><tr><td>test</td><td>148</td><td>$-23.18</td><td>$-0.16</td><td>0.67</td><td>$23.18</td></tr></tbody></table></div><p class="muted">Overfit warning: candidate fails at least one chronological split</p>
     </section>
 
     <section class="panel span-6">
@@ -259,7 +292,7 @@
 
     <section class="panel span-6">
       <h2>Next Tasks</h2>
-      <ul class="clean"><li>Do not run BTC 1m until runtime is acceptable; 1m is much larger than 5m.</li><li>Add walk-forward splits before promoting any strategy rule.</li><li>Investigate breakout and momentum failures by entry-only clusters, fees, and stop-loss hit rate.</li><li>Keep scalping microstructure disabled by default unless backtest-only evidence improves.</li></ul>
+      <ul class="clean"><li>Do not run BTC 1m until runtime is acceptable; 1m is much larger than 5m.</li><li>Add rolling walk-forward optimization after the current chronological split diagnostics.</li><li>Investigate breakout and momentum failures by entry-only clusters, fees, and stop-loss hit rate.</li><li>Keep scalping microstructure disabled by default unless backtest-only evidence improves.</li></ul>
     </section>
 
     <section class="panel span-6">
@@ -274,7 +307,7 @@
 
     <section class="panel span-6">
       <h2>Local Workflow</h2>
-      <div class="code">tools\run_btc_15m_3y_backtest.bat<br>tools\run_btc_5m_3y_backtest.bat<br>tools\run_btc_1m_3y_backtest.bat<br>tools\run_btc_optimization_suite.bat<br>tools\compare_logs.bat<br>tools\update_dashboard.bat<br>tools\safe_git_status.bat</div>
+      <div class="code">tools\download_btc_3y_data.bat<br>tools\verify_btc_3y_data.bat<br>tools\run_btc_15m_3y_backtest.bat<br>tools\run_btc_5m_3y_backtest.bat<br>tools\run_btc_1m_3y_backtest.bat<br>tools\run_btc_optimization_suite.bat<br>tools\compare_logs.bat<br>tools\update_dashboard.bat<br>tools\safe_git_status.bat</div>
       <p class="muted">Backtest helpers write ignored local files under data/. The dashboard generator publishes compact, non-secret HTML under docs/.</p>
     </section>
 
@@ -291,7 +324,7 @@
   </main>
 
   <footer class="shell footer">
-    Generated at 2026-05-06 09:44:48 UTC from compact local summary records only.
+    Generated at 2026-05-06 10:30:48 UTC from compact local summary records only.
   </footer>
 </body>
 </html>

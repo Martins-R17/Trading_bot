@@ -58,6 +58,11 @@ set "EXIT_CODE=%ERRORLEVEL%"
 if "%EXIT_CODE%"=="0" (
   echo BTC 1m backtest finished.
   call "%~dp0update_dashboard.bat" --no-pause
+  if not "%ERRORLEVEL%"=="0" (
+    echo Dashboard update failed after successful BTC 1m backtest.
+    if "%PAUSE_ON_EXIT%"=="1" pause
+    exit /b 3
+  )
 ) else (
   echo BTC 1m backtest failed with exit code %EXIT_CODE%.
 )

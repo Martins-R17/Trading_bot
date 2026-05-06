@@ -314,6 +314,7 @@ class CalibrationResult:
     signal_window_bars: int = DEFAULT_SIGNAL_WINDOW_BARS
     data_profiles: list[dict[str, Any]] = field(default_factory=list)
     max_hold_candles: int = 60
+    simulate_rejected_quality: bool = False
     quality_filter_enabled: bool = False
     trailing_exits_enabled: bool = False
     quality_config: BacktestQualityConfig = field(default_factory=lambda: BacktestQualityConfig())
@@ -372,6 +373,8 @@ class RealizedOptimizationRow:
     exit_reason_counts: dict[str, int] = field(default_factory=dict)
     quality_rejection_counts: dict[str, int] = field(default_factory=dict)
     quality_rejected_losing_count: int = 0
+    walk_forward_splits: list[dict[str, Any]] = field(default_factory=list)
+    walk_forward_verdict: str = "n/a"
 
     @property
     def win_rate(self) -> float:
@@ -432,6 +435,7 @@ class RealizedOptimizationResult:
     diagnostic_notional: float
     signal_window_bars: int = DEFAULT_SIGNAL_WINDOW_BARS
     data_profiles: list[dict[str, Any]] = field(default_factory=list)
+    simulate_rejected_quality: bool = False
     quality_filter_enabled: bool = False
     trailing_exits_enabled: bool = False
     quality_config: BacktestQualityConfig = field(default_factory=lambda: BacktestQualityConfig())
@@ -970,6 +974,7 @@ class HistoricalStrategyCalibrator:
         timeframe: str | None = None,
         signal_window_bars: int = DEFAULT_SIGNAL_WINDOW_BARS,
         max_hold_candles: int = 60,
+        simulate_rejected_quality: bool = False,
         quality_filter_enabled: bool = False,
         trailing_exits_enabled: bool = False,
         breakeven_trigger_r: float = 1.0,
@@ -982,6 +987,7 @@ class HistoricalStrategyCalibrator:
         self.diagnostic_notional = diagnostic_notional or self._default_diagnostic_notional()
         self.timeframe = timeframe or settings.trading.timeframe
         self.signal_window_bars = max(100, int(signal_window_bars))
+        self.simulate_rejected_quality = simulate_rejected_quality
         self.calibration_min_expected_net_profit = max(
             0.0,
             float(
@@ -1026,6 +1032,7 @@ class HistoricalStrategyCalibrator:
             signal_window_bars=self.signal_window_bars,
             data_profiles=build_data_profiles(historical_by_symbol, self.timeframe),
             max_hold_candles=self.max_hold_candles,
+            simulate_rejected_quality=self.simulate_rejected_quality,
             quality_filter_enabled=self.quality_filter_enabled,
             trailing_exits_enabled=self.trailing_exits_enabled,
             quality_config=self.quality_config,
@@ -1076,7 +1083,7 @@ class HistoricalStrategyCalibrator:
                 symbol=symbol,
                 timestamp=self._finite_number(window["timestamp"].iloc[-1]),
                 ohlcv=window,
-                volatility=DataPreprocessor.realized_volatility(window),
+                volatility=self._snapshot_volatility(df, index),
             )
             signal = strategy.generate_signal(snapshot)
             metadata = dict(signal.metadata)
@@ -1127,17 +1134,18 @@ class HistoricalStrategyCalibrator:
                         backtest_quality_passes = False
                         signal.metadata.update(quality_decision.metadata)
                         quality_rejections[quality_decision.reason] += 1
-                        rejected_simulation = self._simulate_exit(
-                            symbol=symbol,
-                            strategy_name=strategy.name,
-                            df=df,
-                            entry_index=index,
-                            signal=signal,
-                        )
-                        if rejected_simulation.realized_net_pnl < 0:
-                            quality_rejected_losing_count += 1
-                            if len(quality_rejected_simulations) < 8:
-                                quality_rejected_simulations.append(rejected_simulation)
+                        if self.simulate_rejected_quality:
+                            rejected_simulation = self._simulate_exit(
+                                symbol=symbol,
+                                strategy_name=strategy.name,
+                                df=df,
+                                entry_index=index,
+                                signal=signal,
+                            )
+                            if rejected_simulation.realized_net_pnl < 0:
+                                quality_rejected_losing_count += 1
+                                if len(quality_rejected_simulations) < 8:
+                                    quality_rejected_simulations.append(rejected_simulation)
                     else:
                         signal.metadata.update(quality_decision.metadata)
                 if backtest_quality_passes:
@@ -1177,6 +1185,12 @@ class HistoricalStrategyCalibrator:
             return stop_loss < entry < take_profit
         return take_profit < entry < stop_loss
 
+    def _snapshot_volatility(self, df: pd.DataFrame, index: int) -> float:
+        if "rolling_volatility" in df.columns:
+            return self._finite_number(df["rolling_volatility"].iloc[index], 0.0)
+        window_start = max(0, index + 1 - 30)
+        return DataPreprocessor.realized_volatility(df.iloc[window_start : index + 1])
+
     def _simulate_exit(
         self,
         symbol: str,
@@ -1184,6 +1198,7 @@ class HistoricalStrategyCalibrator:
         df: pd.DataFrame,
         entry_index: int,
         signal: StrategySignal,
+        collect_path: bool = False,
     ) -> SimulationTrade:
         entry_price = self._finite_number(signal.entry_price)
         stop_loss = self._finite_number(signal.stop_loss)
@@ -1213,19 +1228,22 @@ class HistoricalStrategyCalibrator:
             exit_price = self._finite_number(last_row["close"], entry_price)
             exit_timestamp = self._finite_number(last_row["timestamp"], entry_timestamp)
             hold_candles = len(future)
-            future_high_low_path = [
-                {
-                    "timestamp": self._finite_number(getattr(row, "timestamp"), entry_timestamp),
-                    "high": self._finite_number(getattr(row, "high"), entry_price),
-                    "low": self._finite_number(getattr(row, "low"), entry_price),
-                }
-                for row in future.itertuples(index=False)
-            ]
+            timestamps = future["timestamp"].to_numpy(copy=False)
+            highs = future["high"].to_numpy(copy=False)
+            lows = future["low"].to_numpy(copy=False)
 
-            for offset, candle in enumerate(future_high_low_path, start=1):
-                high = candle["high"]
-                low = candle["low"]
-                timestamp = candle["timestamp"]
+            for offset, (timestamp_value_raw, high_raw, low_raw) in enumerate(zip(timestamps, highs, lows), start=1):
+                timestamp = self._finite_number(timestamp_value_raw, entry_timestamp)
+                high = self._finite_number(high_raw, entry_price)
+                low = self._finite_number(low_raw, entry_price)
+                if collect_path:
+                    future_high_low_path.append(
+                        {
+                            "timestamp": timestamp,
+                            "high": high,
+                            "low": low,
+                        }
+                    )
 
                 if signal.side == Side.BUY:
                     stop_hit = low <= dynamic_stop
@@ -1448,6 +1466,7 @@ class RealizedSweepOptimizer:
         atr_tp_sweep: tuple[float, ...],
         atr_stop_sweep: tuple[float, ...],
         signal_window_bars: int = DEFAULT_SIGNAL_WINDOW_BARS,
+        simulate_rejected_quality: bool = False,
         soft_rsi_high_long_sweep: tuple[float, ...] | None = None,
         soft_close_position_high_long_sweep: tuple[float, ...] | None = None,
         soft_rsi_low_short_sweep: tuple[float, ...] | None = None,
@@ -1468,6 +1487,7 @@ class RealizedSweepOptimizer:
         self.atr_tp_sweep = atr_tp_sweep
         self.atr_stop_sweep = atr_stop_sweep
         self.signal_window_bars = max(100, int(signal_window_bars))
+        self.simulate_rejected_quality = simulate_rejected_quality
         self.diagnostic_notional = diagnostic_notional
         self.calibration_min_expected_net_profit = calibration_min_expected_net_profit
         self.quality_filter_enabled = quality_filter_enabled
@@ -1498,6 +1518,7 @@ class RealizedSweepOptimizer:
                 timeframe=config.timeframe,
                 signal_window_bars=self.signal_window_bars,
                 max_hold_candles=config.max_hold_candles,
+                simulate_rejected_quality=self.simulate_rejected_quality,
                 quality_filter_enabled=self.quality_filter_enabled,
                 trailing_exits_enabled=self.trailing_exits_enabled,
                 breakeven_trigger_r=self.breakeven_trigger_r,
@@ -1534,6 +1555,7 @@ class RealizedSweepOptimizer:
             diagnostic_notional=diagnostic_notional,
             signal_window_bars=self.signal_window_bars,
             data_profiles=build_data_profiles(historical_by_symbol, self.timeframe),
+            simulate_rejected_quality=self.simulate_rejected_quality,
             quality_filter_enabled=self.quality_filter_enabled,
             trailing_exits_enabled=self.trailing_exits_enabled,
             quality_config=self.quality_config,
@@ -1650,6 +1672,8 @@ class RealizedSweepOptimizer:
             exit_reason_counts=dict(exit_counts),
             quality_rejection_counts=stats.quality_rejection_counts,
             quality_rejected_losing_count=stats.quality_rejected_losing_count,
+            walk_forward_splits=self._walk_forward_splits(sorted_trades),
+            walk_forward_verdict=self._walk_forward_verdict(sorted_trades),
         )
 
     def _max_drawdown(self, net_values: list[float]) -> float:
@@ -1661,6 +1685,74 @@ class RealizedSweepOptimizer:
             peak = max(peak, equity)
             max_drawdown = max(max_drawdown, peak - equity)
         return max_drawdown
+
+    def _walk_forward_splits(self, trades: list[SimulationTrade]) -> list[dict[str, Any]]:
+        labels = ("train", "validation", "test")
+        if not trades:
+            return [
+                self._walk_forward_stats(label, [])
+                for label in labels
+            ]
+        timestamps = [trade.entry_timestamp for trade in trades]
+        start = min(timestamps)
+        end = max(timestamps)
+        if end <= start:
+            chunks = split_sequence(trades, len(labels))
+            return [self._walk_forward_stats(label, chunk) for label, chunk in zip(labels, chunks)]
+
+        span = end - start
+        split_1 = start + span / 3
+        split_2 = start + span * 2 / 3
+        buckets = [
+            [trade for trade in trades if trade.entry_timestamp < split_1],
+            [trade for trade in trades if split_1 <= trade.entry_timestamp < split_2],
+            [trade for trade in trades if trade.entry_timestamp >= split_2],
+        ]
+        return [self._walk_forward_stats(label, bucket) for label, bucket in zip(labels, buckets)]
+
+    def _walk_forward_stats(self, label: str, trades: list[SimulationTrade]) -> dict[str, Any]:
+        net_values = [trade.realized_net_pnl for trade in trades]
+        gross_profit = sum(value for value in net_values if value > 0)
+        gross_loss = abs(sum(value for value in net_values if value < 0))
+        wins = sum(1 for value in net_values if value > 0)
+        losses = sum(1 for value in net_values if value <= 0)
+        profit_factor = None
+        if trades:
+            if gross_loss <= 0:
+                profit_factor = None if gross_profit <= 0 else float("inf")
+            else:
+                profit_factor = gross_profit / gross_loss
+        return {
+            "split": label,
+            "trades": len(trades),
+            "wins": wins,
+            "losses": losses,
+            "win_rate": wins / len(trades) * 100 if trades else 0.0,
+            "gross": sum(trade.realized_gross_pnl for trade in trades),
+            "costs": sum(trade.total_costs for trade in trades),
+            "net": sum(net_values),
+            "avg_net": sum(net_values) / len(trades) if trades else 0.0,
+            "pf": profit_factor,
+            "max_drawdown": self._max_drawdown(net_values),
+        }
+
+    def _walk_forward_verdict(self, trades: list[SimulationTrade]) -> str:
+        if len(trades) < 30:
+            return "too_few_trades"
+        splits = self._walk_forward_splits(trades)
+        populated = [split for split in splits if int(split["trades"]) > 0]
+        if len(populated) < 3:
+            return "weak_overfit_risk"
+        if any(float(split["net"]) <= 0 for split in populated):
+            return "not_profitable_out_of_sample"
+        profit_factors = [split.get("pf") for split in populated]
+        if any(pf is None or float(pf) <= 1.0 for pf in profit_factors):
+            return "not_profitable_out_of_sample"
+        if len(trades) >= 100 and all(float(pf) >= 1.2 for pf in profit_factors):
+            return "robust_candidate"
+        if all(float(pf) >= 1.1 for pf in profit_factors):
+            return "promising_needs_more_testing"
+        return "weak_overfit_risk"
 
     def _losing_examples(self, trades: list[SimulationTrade]) -> list[SimulationTrade]:
         return sorted(
@@ -1775,6 +1867,16 @@ def approximate_days(start: float | None, end: float | None) -> float | None:
     return days
 
 
+def split_sequence(items: list[Any], parts: int) -> list[list[Any]]:
+    if parts <= 0:
+        return []
+    size = len(items)
+    return [
+        items[round(index * size / parts) : round((index + 1) * size / parts)]
+        for index in range(parts)
+    ]
+
+
 def parse_csv_mappings(items: list[str]) -> dict[str, Path]:
     mappings: dict[str, Path] = {}
     for item in items:
@@ -1814,6 +1916,7 @@ def print_report(result: CalibrationResult) -> None:
     print("same-candle stop/target ambiguity is resolved conservatively as stop_loss_hit")
     print("NetOK/WouldTrade use calibration_min_expected_net_profit; production min remains unchanged")
     print(f"signal_window_bars={result.signal_window_bars}")
+    print(f"simulate_rejected_quality={'enabled' if result.simulate_rejected_quality else 'disabled'}")
     print_data_profiles(result.data_profiles)
     print(f"backtest_quality_filter={'enabled' if result.quality_filter_enabled else 'disabled'}")
     print(f"backtest_trailing_exits={'enabled' if result.trailing_exits_enabled else 'disabled'}")
@@ -1947,6 +2050,7 @@ def print_realized_optimization_report(result: RealizedOptimizationResult) -> No
     print("temporary sweep settings do not change main.py, settings/.env, or live/paper bot behavior")
     print("NetOK/WouldTrade use calibration_min_expected_net_profit; production min remains unchanged")
     print(f"signal_window_bars={result.signal_window_bars}")
+    print(f"simulate_rejected_quality={'enabled' if result.simulate_rejected_quality else 'disabled'}")
     print_data_profiles(result.data_profiles)
     print(f"backtest_quality_filter={'enabled' if result.quality_filter_enabled else 'disabled'}")
     print(f"backtest_trailing_exits={'enabled' if result.trailing_exits_enabled else 'disabled'}")
@@ -1986,6 +2090,13 @@ def print_realized_optimization_report(result: RealizedOptimizationResult) -> No
         "Worst Combinations",
         sorted(traded_rows, key=lambda row: (row.net_pnl, row.average_net_per_trade))[:10],
     )
+    print_walk_forward_validation(
+        sorted(
+            [row for row in traded_rows if row.trades >= 30],
+            key=lambda row: (row.net_pnl, row.average_net_per_trade),
+            reverse=True,
+        )[:5]
+    )
     print_quality_rejection_diagnostics(
         result.quality_rejection_counts,
         result.quality_rejected_simulations,
@@ -2016,7 +2127,7 @@ def print_realized_optimization_rows(
         f"{'Loss':>6} {'Win%':>7} {'Gross':>11} {'Costs':>11} {'Net':>11} "
         f"{'AvgNet':>11} {'PF':>7} {'MaxDD':>10} {'Stop%':>7} {'TP%':>7} "
         f"{'Hor%':>7} {'AvgHold':>8} {'QRej':>7} {'QRejLoss':>9} "
-        f"{'ExitReasons':<36} {'QualityRejections':<42}"
+        f"{'WF':<28} {'ExitReasons':<36} {'QualityRejections':<42}"
     )
     for row in rows:
         print(
@@ -2031,6 +2142,7 @@ def print_realized_optimization_rows(
             f"{row.take_profit_hit_rate:>6.1f}% {row.max_horizon_exit_rate:>6.1f}% "
             f"{row.average_hold_candles:>8.1f} {row.quality_rejected_count:>7} "
             f"{row.quality_rejected_losing_count:>9} "
+            f"{row.walk_forward_verdict:<28} "
             f"{format_exit_reasons(row.exit_reason_counts):<36} "
             f"{format_rejection_counts(row.quality_rejection_counts):<42}"
         )
@@ -2042,6 +2154,29 @@ def format_profit_factor(value: float | None) -> str:
     if value == float("inf"):
         return "inf"
     return f"{value:.2f}"
+
+
+def print_walk_forward_validation(rows: list[RealizedOptimizationRow]) -> None:
+    print()
+    print("Walk-Forward Validation (Train / Validation / Test)")
+    print("calibration only; split keys use chronological entry timestamps and do not change live/paper behavior")
+    if not rows:
+        print("none")
+        return
+    for row in rows:
+        print(
+            f"{row.symbol} {row.strategy_name} tf={row.timeframe} target={row.min_target_move_bps:.2f} "
+            f"hold={row.max_hold_candles} atrtp={row.atr_take_profit_multiplier:.2f} "
+            f"atrsl={row.atr_stop_loss_multiplier:.2f} verdict={row.walk_forward_verdict}"
+        )
+        print(f"{'Split':<12} {'Trades':>7} {'Win%':>7} {'Net':>11} {'AvgNet':>11} {'PF':>7} {'MaxDD':>10}")
+        for split in row.walk_forward_splits:
+            print(
+                f"{split['split']:<12} {int(split['trades']):>7} {float(split['win_rate']):>6.1f}% "
+                f"${float(split['net']):>10.2f} ${float(split['avg_net']):>10.2f} "
+                f"{format_profit_factor(split.get('pf')):>7} ${float(split['max_drawdown']):>9.2f}"
+            )
+        print()
 
 
 def print_data_profiles(profiles: list[dict[str, Any]]) -> None:
@@ -2070,6 +2205,7 @@ def print_compact_realized_sweep_summary(result: RealizedOptimizationResult) -> 
     print("=== Compact Realized Sweep Summary ===")
     print(f"diagnostic_notional=${summary['diagnostic_notional']:,.2f}")
     print(f"signal_window_bars={summary['signal_window_bars']}")
+    print(f"simulate_rejected_quality={summary['simulate_rejected_quality']}")
     print(f"production_min_target_move_bps={summary['production_min_target_move_bps']:.2f}")
     print(f"production_min_reward_cost_ratio={summary['production_min_reward_cost_ratio']:.2f}")
     print(f"production_min_expected_net_profit=${summary['production_min_expected_net_profit']:,.2f}")
@@ -2091,6 +2227,8 @@ def print_compact_realized_sweep_summary(result: RealizedOptimizationResult) -> 
     )
     print(f"best_overall={format_compact_row_summary(summary['best_overall'])}")
     print(f"best_at_least_30={format_compact_row_summary(summary['best_at_least_30'])}")
+    print(f"walk_forward_verdict={summary['walk_forward_verdict']}")
+    print(f"overfit_warning={summary['overfit_warning']}")
     print(f"worst_overall={format_compact_row_summary(summary['worst_overall'])}")
     print(f"best_soft_threshold_set={format_compact_threshold_summary(summary['best_soft_threshold_set'])}")
     print(f"top_quality_rejections={format_top_quality_rejection_summary(summary['top_quality_rejections'])}")
@@ -2135,9 +2273,10 @@ def build_compact_realized_sweep_summary(result: RealizedOptimizationResult) -> 
         default=None,
     )
     return {
-        "summary_version": 2,
+        "summary_version": 3,
         "diagnostic_notional": result.diagnostic_notional,
         "signal_window_bars": result.signal_window_bars,
+        "simulate_rejected_quality": "enabled" if result.simulate_rejected_quality else "disabled",
         "production_min_target_move_bps": result.production_target_move_bps,
         "production_min_reward_cost_ratio": result.production_reward_cost_ratio,
         "production_min_expected_net_profit": result.production_min_expected_net_profit,
@@ -2158,6 +2297,8 @@ def build_compact_realized_sweep_summary(result: RealizedOptimizationResult) -> 
         ),
         "best_overall": compact_realized_row_data(best_overall),
         "best_at_least_30": compact_realized_row_data(best_at_least_30),
+        "walk_forward_verdict": best_at_least_30.walk_forward_verdict if best_at_least_30 else "too_few_trades",
+        "overfit_warning": compact_overfit_warning(best_at_least_30),
         "worst_overall": compact_realized_row_data(worst_overall),
         "best_soft_threshold_set": compact_soft_threshold_data(best_at_least_30 or best_overall),
         "top_quality_rejections": top_quality_rejection_data(result.quality_rejection_counts),
@@ -2257,6 +2398,8 @@ def compact_realized_row_data(row: RealizedOptimizationRow | None) -> dict[str, 
         "stop_loss_hit_rate": row.stop_loss_hit_rate,
         "take_profit_hit_rate": row.take_profit_hit_rate,
         "max_horizon_exit_rate": row.max_horizon_exit_rate,
+        "walk_forward": row.walk_forward_splits,
+        "walk_forward_verdict": row.walk_forward_verdict,
         "soft_thresholds": compact_soft_threshold_data(row),
     }
 
@@ -2399,7 +2542,23 @@ def compact_realized_verdict(best_at_least_30: RealizedOptimizationRow | None) -
     profit_factor = best_at_least_30.profit_factor
     if best_at_least_30.net_pnl <= 0 or profit_factor is None or profit_factor <= 1.0:
         return "not_profitable_at_30_trades"
+    if best_at_least_30.walk_forward_verdict in {"not_profitable_out_of_sample", "weak_overfit_risk"}:
+        return best_at_least_30.walk_forward_verdict
+    if best_at_least_30.walk_forward_verdict == "robust_candidate":
+        return "robust_candidate"
     return "potentially_promising_needs_more_testing"
+
+
+def compact_overfit_warning(best_at_least_30: RealizedOptimizationRow | None) -> str:
+    if best_at_least_30 is None:
+        return "no 30+ trade candidate; too few trades for validation"
+    if best_at_least_30.walk_forward_verdict == "not_profitable_out_of_sample":
+        return "candidate fails at least one chronological split"
+    if best_at_least_30.walk_forward_verdict == "weak_overfit_risk":
+        return "candidate lacks stable split-level evidence"
+    if best_at_least_30.walk_forward_verdict == "robust_candidate":
+        return "split-level evidence is positive; still requires fresh out-of-sample testing"
+    return "not independently validated beyond historical walk-forward split"
 
 
 def print_quality_rejection_diagnostics(
@@ -3343,6 +3502,14 @@ def build_arg_parser() -> argparse.ArgumentParser:
         help="Disable the experimental quality filter that is enabled by default for --realized-sweep.",
     )
     parser.add_argument(
+        "--simulate-rejected-quality",
+        action="store_true",
+        help=(
+            "Calibration/backtest-only: simulate quality-rejected candidates for rejected-loser diagnostics. "
+            "Off by default for long 3-year runs."
+        ),
+    )
+    parser.add_argument(
         "--backtest-trailing-exits",
         action="store_true",
         help="Enable optional calibration-only breakeven/trailing stop simulation.",
@@ -3626,6 +3793,7 @@ def main() -> None:
             soft_rsi_low_short_sweep=soft_rsi_low_short_sweep,
             soft_close_position_low_short_sweep=soft_close_position_low_short_sweep,
             signal_window_bars=args.signal_window_bars,
+            simulate_rejected_quality=args.simulate_rejected_quality,
             diagnostic_notional=args.diagnostic_notional,
             calibration_min_expected_net_profit=calibration_min_expected_net_profit,
             quality_filter_enabled=quality_filter_enabled,
@@ -3648,6 +3816,7 @@ def main() -> None:
         diagnostic_notional=args.diagnostic_notional,
         calibration_min_expected_net_profit=calibration_min_expected_net_profit,
         max_hold_candles=args.max_hold_candles,
+        simulate_rejected_quality=args.simulate_rejected_quality,
         quality_filter_enabled=quality_filter_enabled,
         trailing_exits_enabled=args.backtest_trailing_exits,
         breakeven_trigger_r=args.breakeven_trigger_r,
