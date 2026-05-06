@@ -8,8 +8,11 @@ fee-aware candidates under production thresholds and under calibration sweeps.
 from __future__ import annotations
 
 import argparse
+import json
+import os
 from collections import Counter, defaultdict
 from dataclasses import dataclass, field, replace
+from datetime import datetime, timezone
 from itertools import product
 from pathlib import Path
 from typing import Any
@@ -35,6 +38,23 @@ DEFAULT_REALIZED_REWARD_COST_SWEEP = (2.0, 3.0, 4.0)
 DEFAULT_REALIZED_MAX_HOLD_SWEEP = (16, 32, 48, 96)
 DEFAULT_REALIZED_ATR_TP_SWEEP = (2.0, 3.0, 4.0, 5.0)
 DEFAULT_REALIZED_ATR_STOP_SWEEP = (0.75, 1.0, 1.5, 2.0)
+DEFAULT_EXHAUSTION_RSI_HIGH = 68.0
+DEFAULT_EXHAUSTION_RSI_LOW = 32.0
+DEFAULT_EXHAUSTION_CLOSE_POSITION_HIGH = 0.90
+DEFAULT_EXHAUSTION_CLOSE_POSITION_LOW = 0.10
+DEFAULT_EXHAUSTION_CANDLE_ATR_MULTIPLIER = 1.5
+DEFAULT_EXTREME_RSI_HIGH = 72.0
+DEFAULT_EXTREME_RSI_LOW = 28.0
+DEFAULT_SOFT_RSI_LOW_SHORT = 35.0
+DEFAULT_SOFT_CLOSE_POSITION_LOW_SHORT = 0.30
+DEFAULT_SOFT_RSI_HIGH_LONG = 65.0
+DEFAULT_SOFT_CLOSE_POSITION_HIGH_LONG = 0.70
+DEFAULT_REJECT_SOFT_LATE_MOMENTUM = False
+DEFAULT_SOFT_RSI_HIGH_LONG_SWEEP = (65.0, 67.0, 69.0)
+DEFAULT_SOFT_CLOSE_POSITION_HIGH_LONG_SWEEP = (0.70, 0.80, 0.90)
+DEFAULT_SOFT_RSI_LOW_SHORT_SWEEP = (31.0, 33.0, 35.0)
+DEFAULT_SOFT_CLOSE_POSITION_LOW_SHORT_SWEEP = (0.10, 0.20, 0.30)
+DEFAULT_SUMMARY_LOG_PATH = Path("data/backtest_logs/realized_sweep_summary.jsonl")
 CORE_CHECKS = ("rsi_check", "ema_trend_check", "macd_check", "volatility_atr_check")
 
 
@@ -100,6 +120,8 @@ class StrategyCalibrationStats:
     target_move_sum: float = 0.0
     reward_cost_sum: float = 0.0
     expected_net_profit_sum: float = 0.0
+    quality_rejection_counts: dict[str, int] = field(default_factory=dict)
+    quality_rejected_losing_count: int = 0
 
     def record_considered(
         self,
@@ -282,10 +304,15 @@ class CalibrationResult:
     max_hold_candles: int = 60
     quality_filter_enabled: bool = False
     trailing_exits_enabled: bool = False
+    quality_config: BacktestQualityConfig = field(default_factory=lambda: BacktestQualityConfig())
     rows: list[StrategyCalibrationStats] = field(default_factory=list)
     sweep_rows: list[SweepStats] = field(default_factory=list)
     simulation_rows: list[SimulationSummary] = field(default_factory=list)
     simulation_trades: list[SimulationTrade] = field(default_factory=list)
+    quality_rejection_counts: dict[str, int] = field(default_factory=dict)
+    quality_rejected_simulations: list[SimulationTrade] = field(default_factory=list)
+    quality_rejected_losing_count: int = 0
+    accepted_loser_clusters: list["AcceptedLoserCluster"] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -298,6 +325,10 @@ class RealizedSweepConfig:
     max_hold_candles: int
     atr_take_profit_multiplier: float
     atr_stop_loss_multiplier: float
+    soft_rsi_high_long: float
+    soft_close_position_high_long: float
+    soft_rsi_low_short: float
+    soft_close_position_low_short: float
 
 
 @dataclass
@@ -312,6 +343,10 @@ class RealizedOptimizationRow:
     max_hold_candles: int
     atr_take_profit_multiplier: float
     atr_stop_loss_multiplier: float
+    soft_rsi_high_long: float
+    soft_close_position_high_long: float
+    soft_rsi_low_short: float
+    soft_close_position_low_short: float
     trades: int = 0
     wins: int = 0
     losses: int = 0
@@ -323,6 +358,8 @@ class RealizedOptimizationRow:
     hold_candles_sum: int = 0
     max_drawdown: float = 0.0
     exit_reason_counts: dict[str, int] = field(default_factory=dict)
+    quality_rejection_counts: dict[str, int] = field(default_factory=dict)
+    quality_rejected_losing_count: int = 0
 
     @property
     def win_rate(self) -> float:
@@ -367,6 +404,10 @@ class RealizedOptimizationRow:
             return 0.0
         return sum(self.exit_reason_counts.get(reason, 0) for reason in reasons) / self.trades * 100
 
+    @property
+    def quality_rejected_count(self) -> int:
+        return sum(self.quality_rejection_counts.values())
+
 
 @dataclass
 class RealizedOptimizationResult:
@@ -378,8 +419,70 @@ class RealizedOptimizationResult:
     diagnostic_notional: float
     quality_filter_enabled: bool = False
     trailing_exits_enabled: bool = False
+    quality_config: BacktestQualityConfig = field(default_factory=lambda: BacktestQualityConfig())
     rows: list[RealizedOptimizationRow] = field(default_factory=list)
     losing_examples: list[SimulationTrade] = field(default_factory=list)
+    quality_rejection_counts: dict[str, int] = field(default_factory=dict)
+    quality_rejected_simulations: list[SimulationTrade] = field(default_factory=list)
+    quality_rejected_losing_count: int = 0
+    accepted_loser_clusters: list["AcceptedLoserCluster"] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class BacktestQualityConfig:
+    """Calibration-only exhaustion and late-entry thresholds."""
+
+    exhaustion_rsi_high: float = DEFAULT_EXHAUSTION_RSI_HIGH
+    exhaustion_rsi_low: float = DEFAULT_EXHAUSTION_RSI_LOW
+    exhaustion_close_position_high: float = DEFAULT_EXHAUSTION_CLOSE_POSITION_HIGH
+    exhaustion_close_position_low: float = DEFAULT_EXHAUSTION_CLOSE_POSITION_LOW
+    exhaustion_candle_atr_multiplier: float = DEFAULT_EXHAUSTION_CANDLE_ATR_MULTIPLIER
+    extreme_rsi_high: float = DEFAULT_EXTREME_RSI_HIGH
+    extreme_rsi_low: float = DEFAULT_EXTREME_RSI_LOW
+    soft_rsi_low_short: float = DEFAULT_SOFT_RSI_LOW_SHORT
+    soft_close_position_low_short: float = DEFAULT_SOFT_CLOSE_POSITION_LOW_SHORT
+    soft_rsi_high_long: float = DEFAULT_SOFT_RSI_HIGH_LONG
+    soft_close_position_high_long: float = DEFAULT_SOFT_CLOSE_POSITION_HIGH_LONG
+    reject_soft_late_momentum: bool = DEFAULT_REJECT_SOFT_LATE_MOMENTUM
+
+
+@dataclass
+class AcceptedLoserCluster:
+    """Cluster of accepted losing trades for diagnostics only."""
+
+    side: str
+    strategy_name: str
+    exit_reason: str
+    rsi_band: str
+    close_position_band: str
+    hold_band: str
+    soft_label: str
+    count: int = 0
+    net_pnl: float = 0.0
+    rsi_sum: float = 0.0
+    rsi_count: int = 0
+    close_position_sum: float = 0.0
+    close_position_count: int = 0
+    hold_sum: int = 0
+    stop_loss_count: int = 0
+
+    @property
+    def average_rsi(self) -> float:
+        if self.rsi_count <= 0:
+            return 0.0
+        return self.rsi_sum / self.rsi_count
+
+    @property
+    def average_close_position(self) -> float:
+        if self.close_position_count <= 0:
+            return 0.0
+        return self.close_position_sum / self.close_position_count
+
+    @property
+    def average_hold(self) -> float:
+        if self.count <= 0:
+            return 0.0
+        return self.hold_sum / self.count
 
 
 @dataclass(frozen=True)
@@ -394,8 +497,13 @@ class BacktestQualityDecision:
 class BacktestQualityFilter:
     """Experimental calibration-only filters from realized backtest failures."""
 
-    def __init__(self, settings: Settings) -> None:
+    def __init__(
+        self,
+        settings: Settings,
+        config: BacktestQualityConfig | None = None,
+    ) -> None:
         self.settings = settings
+        self.config = config or BacktestQualityConfig()
 
     def evaluate(
         self,
@@ -419,6 +527,7 @@ class BacktestQualityFilter:
         close_position = self._close_position(df)
         body_bps = self._body_bps(df, price)
         candle_range_bps = self._candle_range_bps(df, price)
+        candle_body_direction = self._candle_body_direction(df)
         macd_hist = self._latest(df, "macd_hist", 0.0)
         previous_macd_hist = self._previous(df, "macd_hist", macd_hist)
         macd_hist_bps = macd_hist / max(price, 1e-9) * 10_000
@@ -427,9 +536,23 @@ class BacktestQualityFilter:
         target_move_bps = abs(float(signal.take_profit or signal.entry_price) - signal.entry_price) / max(signal.entry_price, 1e-9) * 10_000
         target_stop_ratio = target_move_bps / max(stop_move_bps, 1e-9)
         stop_atr_multiple = stop_move_bps / max(atr_bps, 1e-9)
+        body_atr_multiple = body_bps / max(atr_bps, 1e-9)
+        range_atr_multiple = candle_range_bps / max(atr_bps, 1e-9)
         common_metadata = {
             "backtest_quality_filter": "checked",
             "backtest_quality_reason": "",
+            "exhaustion_rsi_high": self.config.exhaustion_rsi_high,
+            "exhaustion_rsi_low": self.config.exhaustion_rsi_low,
+            "exhaustion_close_position_high": self.config.exhaustion_close_position_high,
+            "exhaustion_close_position_low": self.config.exhaustion_close_position_low,
+            "exhaustion_candle_atr_multiplier": self.config.exhaustion_candle_atr_multiplier,
+            "extreme_rsi_high": self.config.extreme_rsi_high,
+            "extreme_rsi_low": self.config.extreme_rsi_low,
+            "soft_rsi_low_short": self.config.soft_rsi_low_short,
+            "soft_close_position_low_short": self.config.soft_close_position_low_short,
+            "soft_rsi_high_long": self.config.soft_rsi_high_long,
+            "soft_close_position_high_long": self.config.soft_close_position_high_long,
+            "reject_soft_late_momentum": "enabled" if self.config.reject_soft_late_momentum else "disabled",
             "ema_gap_bps": ema_gap_bps,
             "trend_slope_bps": trend_slope_bps,
             "atr_expansion": atr_expansion,
@@ -437,6 +560,9 @@ class BacktestQualityFilter:
             "close_position": close_position,
             "body_bps": body_bps,
             "candle_range_bps": candle_range_bps,
+            "candle_body_direction": candle_body_direction,
+            "body_atr_multiple": body_atr_multiple,
+            "range_atr_multiple": range_atr_multiple,
             "macd_hist_bps": macd_hist_bps,
             "rsi": rsi,
             "stop_move_bps": stop_move_bps,
@@ -444,10 +570,50 @@ class BacktestQualityFilter:
             "stop_atr_multiple": stop_atr_multiple,
         }
 
-        if candle_range_bps > max(atr_bps * 2.4, self.settings.risk.round_trip_taker_cost_bps * 2.0):
-            return self._reject("exhaustion_candle", common_metadata)
-        if body_bps > max(atr_bps * 1.8, self.settings.risk.round_trip_taker_cost_bps * 1.5):
-            return self._reject("exhaustion_body", common_metadata)
+        late_long = (
+            side == Side.BUY
+            and rsi >= self.config.exhaustion_rsi_high
+            and close_position >= self.config.exhaustion_close_position_high
+        )
+        late_short = (
+            side == Side.SELL
+            and rsi <= self.config.exhaustion_rsi_low
+            and close_position <= self.config.exhaustion_close_position_low
+        )
+        large_candle = (
+            body_atr_multiple >= self.config.exhaustion_candle_atr_multiplier
+            or range_atr_multiple >= self.config.exhaustion_candle_atr_multiplier
+        )
+        trend_strategy = strategy_name in {"momentum", "breakout"}
+        if trend_strategy and side == Side.BUY and rsi > self.config.extreme_rsi_high:
+            return self._reject("extreme_rsi_long", common_metadata)
+        if trend_strategy and side == Side.SELL and rsi < self.config.extreme_rsi_low:
+            return self._reject("extreme_rsi_short", common_metadata)
+        if self.config.reject_soft_late_momentum and strategy_name == "momentum":
+            if (
+                side == Side.BUY
+                and rsi >= self.config.soft_rsi_high_long
+                and close_position >= self.config.soft_close_position_high_long
+            ):
+                return self._reject("rejected_soft_late_long", common_metadata)
+            if (
+                side == Side.SELL
+                and rsi <= self.config.soft_rsi_low_short
+                and close_position <= self.config.soft_close_position_low_short
+            ):
+                return self._reject("rejected_soft_late_short", common_metadata)
+        if late_long and large_candle and candle_body_direction > 0:
+            return self._reject("exhausted_long", common_metadata)
+        if late_short and large_candle and candle_body_direction < 0:
+            return self._reject("exhausted_short", common_metadata)
+        if late_long or late_short:
+            return self._reject("late_entry", common_metadata)
+        if large_candle:
+            if side == Side.BUY and candle_body_direction > 0:
+                return self._reject("exhausted_long", common_metadata)
+            if side == Side.SELL and candle_body_direction < 0:
+                return self._reject("exhausted_short", common_metadata)
+            return self._reject("late_entry", common_metadata)
         if stop_atr_multiple < 0.75:
             return self._reject("stop_too_tight_for_atr", common_metadata)
         if target_stop_ratio < max(1.35, self.settings.risk.min_reward_risk_ratio):
@@ -608,6 +774,15 @@ class BacktestQualityFilter:
     def _candle_range_bps(self, df: pd.DataFrame, price: float) -> float:
         return (self._latest(df, "high", price) - self._latest(df, "low", price)) / max(price, 1e-9) * 10_000
 
+    def _candle_body_direction(self, df: pd.DataFrame) -> float:
+        close = self._latest(df, "close", 0.0)
+        open_price = self._latest(df, "open", close)
+        if close > open_price:
+            return 1.0
+        if close < open_price:
+            return -1.0
+        return 0.0
+
     def _latest(self, df: pd.DataFrame, column: str, default: float) -> float:
         if column not in df.columns or len(df) == 0:
             return default
@@ -642,6 +817,7 @@ class HistoricalStrategyCalibrator:
         trailing_exits_enabled: bool = False,
         breakeven_trigger_r: float = 1.0,
         trailing_atr_multiplier: float = 1.0,
+        quality_config: BacktestQualityConfig | None = None,
     ) -> None:
         self.settings = settings
         self.target_sweep = target_sweep
@@ -649,7 +825,8 @@ class HistoricalStrategyCalibrator:
         self.diagnostic_notional = diagnostic_notional or self._default_diagnostic_notional()
         self.max_hold_candles = max(1, int(max_hold_candles))
         self.quality_filter_enabled = quality_filter_enabled
-        self.quality_filter = BacktestQualityFilter(settings)
+        self.quality_config = quality_config or BacktestQualityConfig()
+        self.quality_filter = BacktestQualityFilter(settings, self.quality_config)
         self.trailing_exits_enabled = trailing_exits_enabled
         self.breakeven_trigger_r = max(float(breakeven_trigger_r), 0.0)
         self.trailing_atr_multiplier = max(float(trailing_atr_multiplier), 0.0)
@@ -658,14 +835,20 @@ class HistoricalStrategyCalibrator:
         rows: list[StrategyCalibrationStats] = []
         sweep_rows: list[SweepStats] = []
         simulation_trades: list[SimulationTrade] = []
+        quality_rejection_counts: Counter[str] = Counter()
+        quality_rejected_simulations: list[SimulationTrade] = []
+        quality_rejected_losing_count = 0
 
         for symbol, raw_df in historical_by_symbol.items():
             df = DataPreprocessor.add_features(DataPreprocessor.normalize_ohlcv(raw_df))
             for strategy in self._build_strategies():
-                stats, sweeps, trades = self._calibrate_strategy(symbol, df, strategy)
+                stats, sweeps, trades, rejections, rejected_trades, rejected_losing_count = self._calibrate_strategy(symbol, df, strategy)
                 rows.append(stats)
                 sweep_rows.extend(sweeps)
                 simulation_trades.extend(trades)
+                quality_rejection_counts.update(rejections)
+                quality_rejected_simulations.extend(rejected_trades)
+                quality_rejected_losing_count += rejected_losing_count
 
         return CalibrationResult(
             production_target_move_bps=self.settings.risk.min_target_move_bps,
@@ -675,10 +858,15 @@ class HistoricalStrategyCalibrator:
             max_hold_candles=self.max_hold_candles,
             quality_filter_enabled=self.quality_filter_enabled,
             trailing_exits_enabled=self.trailing_exits_enabled,
+            quality_config=self.quality_config,
             rows=rows,
             sweep_rows=sweep_rows,
             simulation_rows=self._summarize_simulation_trades(simulation_trades),
             simulation_trades=simulation_trades,
+            quality_rejection_counts=dict(quality_rejection_counts),
+            quality_rejected_simulations=quality_rejected_simulations,
+            quality_rejected_losing_count=quality_rejected_losing_count,
+            accepted_loser_clusters=build_accepted_loser_clusters(simulation_trades, self.quality_config),
         )
 
     def _calibrate_strategy(
@@ -686,9 +874,19 @@ class HistoricalStrategyCalibrator:
         symbol: str,
         df: pd.DataFrame,
         strategy: BaseStrategy,
-    ) -> tuple[StrategyCalibrationStats, list[SweepStats], list[SimulationTrade]]:
+    ) -> tuple[
+        StrategyCalibrationStats,
+        list[SweepStats],
+        list[SimulationTrade],
+        Counter[str],
+        list[SimulationTrade],
+        int,
+    ]:
         stats = StrategyCalibrationStats(symbol=symbol, strategy_name=strategy.name)
         simulation_trades: list[SimulationTrade] = []
+        quality_rejections: Counter[str] = Counter()
+        quality_rejected_simulations: list[SimulationTrade] = []
+        quality_rejected_losing_count = 0
         sweep_lookup = {
             (target, reward): SweepStats(
                 symbol=symbol,
@@ -756,6 +954,19 @@ class HistoricalStrategyCalibrator:
                     quality_decision = self.quality_filter.evaluate(strategy.name, window, signal)
                     if not quality_decision.approved:
                         backtest_quality_passes = False
+                        signal.metadata.update(quality_decision.metadata)
+                        quality_rejections[quality_decision.reason] += 1
+                        rejected_simulation = self._simulate_exit(
+                            symbol=symbol,
+                            strategy_name=strategy.name,
+                            df=df,
+                            entry_index=index,
+                            signal=signal,
+                        )
+                        if rejected_simulation.realized_net_pnl < 0:
+                            quality_rejected_losing_count += 1
+                            if len(quality_rejected_simulations) < 8:
+                                quality_rejected_simulations.append(rejected_simulation)
                     else:
                         signal.metadata.update(quality_decision.metadata)
                 if backtest_quality_passes:
@@ -772,7 +983,16 @@ class HistoricalStrategyCalibrator:
 
             self._record_sweeps(sweep_lookup, target_move_bps, reward_cost_ratio, expected_net_profit)
 
-        return stats, list(sweep_lookup.values()), simulation_trades
+        stats.quality_rejection_counts = dict(quality_rejections)
+        stats.quality_rejected_losing_count = quality_rejected_losing_count
+        return (
+            stats,
+            list(sweep_lookup.values()),
+            simulation_trades,
+            quality_rejections,
+            quality_rejected_simulations,
+            quality_rejected_losing_count,
+        )
 
     def _is_simulatable_signal(self, signal: StrategySignal) -> bool:
         if not signal.is_actionable or signal.side not in {Side.BUY, Side.SELL}:
@@ -1056,11 +1276,16 @@ class RealizedSweepOptimizer:
         max_hold_sweep: tuple[int, ...],
         atr_tp_sweep: tuple[float, ...],
         atr_stop_sweep: tuple[float, ...],
+        soft_rsi_high_long_sweep: tuple[float, ...] | None = None,
+        soft_close_position_high_long_sweep: tuple[float, ...] | None = None,
+        soft_rsi_low_short_sweep: tuple[float, ...] | None = None,
+        soft_close_position_low_short_sweep: tuple[float, ...] | None = None,
         diagnostic_notional: float | None = None,
         quality_filter_enabled: bool = True,
         trailing_exits_enabled: bool = False,
         breakeven_trigger_r: float = 1.0,
         trailing_atr_multiplier: float = 1.0,
+        quality_config: BacktestQualityConfig | None = None,
     ) -> None:
         self.settings = settings
         self.timeframe = timeframe
@@ -1074,12 +1299,21 @@ class RealizedSweepOptimizer:
         self.trailing_exits_enabled = trailing_exits_enabled
         self.breakeven_trigger_r = breakeven_trigger_r
         self.trailing_atr_multiplier = trailing_atr_multiplier
+        self.quality_config = quality_config or BacktestQualityConfig()
+        self.soft_rsi_high_long_sweep = soft_rsi_high_long_sweep or (self.quality_config.soft_rsi_high_long,)
+        self.soft_close_position_high_long_sweep = soft_close_position_high_long_sweep or (self.quality_config.soft_close_position_high_long,)
+        self.soft_rsi_low_short_sweep = soft_rsi_low_short_sweep or (self.quality_config.soft_rsi_low_short,)
+        self.soft_close_position_low_short_sweep = soft_close_position_low_short_sweep or (self.quality_config.soft_close_position_low_short,)
 
     def run(self, historical_by_symbol: dict[str, pd.DataFrame]) -> RealizedOptimizationResult:
         rows: list[RealizedOptimizationRow] = []
         all_trades: list[SimulationTrade] = []
+        quality_rejection_counts: Counter[str] = Counter()
+        quality_rejected_simulations: list[SimulationTrade] = []
+        quality_rejected_losing_count = 0
         for config in self._configs():
             calibration_settings = self._settings_for_config(config)
+            config_quality = self._quality_config_for_config(config)
             calibrator = HistoricalStrategyCalibrator(
                 settings=calibration_settings,
                 target_sweep=(config.min_target_move_bps,),
@@ -1090,13 +1324,19 @@ class RealizedSweepOptimizer:
                 trailing_exits_enabled=self.trailing_exits_enabled,
                 breakeven_trigger_r=self.breakeven_trigger_r,
                 trailing_atr_multiplier=self.trailing_atr_multiplier,
+                quality_config=config_quality,
             )
             result = calibrator.run(historical_by_symbol)
             all_trades.extend(result.simulation_trades)
+            quality_rejection_counts.update(result.quality_rejection_counts)
+            quality_rejected_losing_count += result.quality_rejected_losing_count
+            for rejected_simulation in result.quality_rejected_simulations:
+                if len(quality_rejected_simulations) < 8:
+                    quality_rejected_simulations.append(rejected_simulation)
             trades_by_key = self._group_trades(result.simulation_trades)
             for stats in result.rows:
                 trades = trades_by_key.get((stats.symbol, stats.strategy_name), [])
-                rows.append(self._row_from_trades(config, stats.symbol, stats.strategy_name, trades))
+                rows.append(self._row_from_trades(config, stats, trades))
 
         diagnostic_notional = (
             self.diagnostic_notional
@@ -1110,8 +1350,13 @@ class RealizedSweepOptimizer:
             diagnostic_notional=diagnostic_notional,
             quality_filter_enabled=self.quality_filter_enabled,
             trailing_exits_enabled=self.trailing_exits_enabled,
+            quality_config=self.quality_config,
             rows=rows,
             losing_examples=self._losing_examples(all_trades),
+            quality_rejection_counts=dict(quality_rejection_counts),
+            quality_rejected_simulations=quality_rejected_simulations,
+            quality_rejected_losing_count=quality_rejected_losing_count,
+            accepted_loser_clusters=build_accepted_loser_clusters(all_trades, self.quality_config),
         )
 
     def _configs(self) -> list[RealizedSweepConfig]:
@@ -1123,15 +1368,42 @@ class RealizedSweepOptimizer:
                 max_hold_candles=max(1, int(max_hold)),
                 atr_take_profit_multiplier=float(atr_tp),
                 atr_stop_loss_multiplier=float(atr_stop),
+                soft_rsi_high_long=float(soft_rsi_high_long),
+                soft_close_position_high_long=float(soft_close_position_high_long),
+                soft_rsi_low_short=float(soft_rsi_low_short),
+                soft_close_position_low_short=float(soft_close_position_low_short),
             )
-            for target, reward_cost, max_hold, atr_tp, atr_stop in product(
+            for (
+                target,
+                reward_cost,
+                max_hold,
+                atr_tp,
+                atr_stop,
+                soft_rsi_high_long,
+                soft_close_position_high_long,
+                soft_rsi_low_short,
+                soft_close_position_low_short,
+            ) in product(
                 self.target_sweep,
                 self.reward_cost_sweep,
                 self.max_hold_sweep,
                 self.atr_tp_sweep,
                 self.atr_stop_sweep,
+                self.soft_rsi_high_long_sweep,
+                self.soft_close_position_high_long_sweep,
+                self.soft_rsi_low_short_sweep,
+                self.soft_close_position_low_short_sweep,
             )
         ]
+
+    def _quality_config_for_config(self, config: RealizedSweepConfig) -> BacktestQualityConfig:
+        return replace(
+            self.quality_config,
+            soft_rsi_high_long=config.soft_rsi_high_long,
+            soft_close_position_high_long=config.soft_close_position_high_long,
+            soft_rsi_low_short=config.soft_rsi_low_short,
+            soft_close_position_low_short=config.soft_close_position_low_short,
+        )
 
     def _settings_for_config(self, config: RealizedSweepConfig) -> Settings:
         risk = replace(
@@ -1156,8 +1428,7 @@ class RealizedSweepOptimizer:
     def _row_from_trades(
         self,
         config: RealizedSweepConfig,
-        symbol: str,
-        strategy_name: str,
+        stats: StrategyCalibrationStats,
         trades: list[SimulationTrade],
     ) -> RealizedOptimizationRow:
         sorted_trades = sorted(trades, key=lambda trade: (trade.entry_index, trade.exit_timestamp))
@@ -1167,13 +1438,17 @@ class RealizedSweepOptimizer:
         gross_loss = abs(sum(value for value in net_values if value < 0))
         return RealizedOptimizationRow(
             timeframe=config.timeframe,
-            symbol=symbol,
-            strategy_name=strategy_name,
+            symbol=stats.symbol,
+            strategy_name=stats.strategy_name,
             min_target_move_bps=config.min_target_move_bps,
             min_reward_cost_ratio=config.min_reward_cost_ratio,
             max_hold_candles=config.max_hold_candles,
             atr_take_profit_multiplier=config.atr_take_profit_multiplier,
             atr_stop_loss_multiplier=config.atr_stop_loss_multiplier,
+            soft_rsi_high_long=config.soft_rsi_high_long,
+            soft_close_position_high_long=config.soft_close_position_high_long,
+            soft_rsi_low_short=config.soft_rsi_low_short,
+            soft_close_position_low_short=config.soft_close_position_low_short,
             trades=len(sorted_trades),
             wins=sum(1 for value in net_values if value > 0),
             losses=sum(1 for value in net_values if value <= 0),
@@ -1185,6 +1460,8 @@ class RealizedSweepOptimizer:
             hold_candles_sum=sum(trade.hold_candles for trade in sorted_trades),
             max_drawdown=self._max_drawdown(net_values),
             exit_reason_counts=dict(exit_counts),
+            quality_rejection_counts=stats.quality_rejection_counts,
+            quality_rejected_losing_count=stats.quality_rejected_losing_count,
         )
 
     def _max_drawdown(self, net_values: list[float]) -> float:
@@ -1295,6 +1572,7 @@ def print_report(result: CalibrationResult) -> None:
     print("same-candle stop/target ambiguity is resolved conservatively as stop_loss_hit")
     print(f"backtest_quality_filter={'enabled' if result.quality_filter_enabled else 'disabled'}")
     print(f"backtest_trailing_exits={'enabled' if result.trailing_exits_enabled else 'disabled'}")
+    print_quality_config(result.quality_config)
     print("averages are over all directional candidates, not only WouldTrade candidates")
     print(
         f"production_min_target_move_bps={result.production_target_move_bps:.2f} | "
@@ -1347,6 +1625,11 @@ def print_report(result: CalibrationResult) -> None:
     print(f"max_hold_candles={result.max_hold_candles}")
     if not result.simulation_rows:
         print("no simulated trades passed production gates")
+        print_quality_rejection_diagnostics(
+            result.quality_rejection_counts,
+            result.quality_rejected_simulations,
+            result.quality_rejected_losing_count,
+        )
         return
     print(
         f"{'Symbol':<10} {'Strategy':<18} {'Trades':>7} {'Wins':>6} {'Losses':>7} "
@@ -1365,7 +1648,17 @@ def print_report(result: CalibrationResult) -> None:
             f"{format_trade_net(row.best_trade):>11} {format_trade_net(row.worst_trade):>11} "
             f"{format_exit_reasons(row.exit_reason_counts):<36}"
         )
-    print_losing_setup_examples(result.simulation_trades)
+    print_quality_rejection_diagnostics(
+        result.quality_rejection_counts,
+        result.quality_rejected_simulations,
+        result.quality_rejected_losing_count,
+    )
+    print_accepted_loser_clusters(
+        build_accepted_loser_clusters(result.simulation_trades, result.quality_config),
+        "Accepted Loser Clusters",
+        repeated_combinations=False,
+    )
+    print_losing_setup_examples(result.simulation_trades, result.quality_config)
 
 
 def format_trade_net(trade: SimulationTrade | None) -> str:
@@ -1382,6 +1675,24 @@ def format_exit_reasons(exit_reason_counts: dict[str, int]) -> str:
     )
 
 
+def print_quality_config(config: BacktestQualityConfig) -> None:
+    print(
+        "exhaustion_thresholds="
+        f"rsi_high={config.exhaustion_rsi_high:.2f}, "
+        f"rsi_low={config.exhaustion_rsi_low:.2f}, "
+        f"close_high={config.exhaustion_close_position_high:.2f}, "
+        f"close_low={config.exhaustion_close_position_low:.2f}, "
+        f"candle_atr={config.exhaustion_candle_atr_multiplier:.2f}, "
+        f"extreme_rsi_high={config.extreme_rsi_high:.2f}, "
+        f"extreme_rsi_low={config.extreme_rsi_low:.2f}, "
+        f"soft_short_rsi={config.soft_rsi_low_short:.2f}, "
+        f"soft_short_close={config.soft_close_position_low_short:.2f}, "
+        f"soft_long_rsi={config.soft_rsi_high_long:.2f}, "
+        f"soft_long_close={config.soft_close_position_high_long:.2f}, "
+        f"reject_soft_late_momentum={'enabled' if config.reject_soft_late_momentum else 'disabled'}"
+    )
+
+
 def print_realized_optimization_report(result: RealizedOptimizationResult) -> None:
     print("Realized Backtest Optimization Report")
     print("calibration only")
@@ -1390,6 +1701,7 @@ def print_realized_optimization_report(result: RealizedOptimizationResult) -> No
     print("temporary sweep settings do not change main.py, settings/.env, or live/paper bot behavior")
     print(f"backtest_quality_filter={'enabled' if result.quality_filter_enabled else 'disabled'}")
     print(f"backtest_trailing_exits={'enabled' if result.trailing_exits_enabled else 'disabled'}")
+    print_quality_config(result.quality_config)
     print(
         f"production_min_target_move_bps={result.production_target_move_bps:.2f} | "
         f"production_min_reward_cost_ratio={result.production_reward_cost_ratio:.2f}x | "
@@ -1424,7 +1736,18 @@ def print_realized_optimization_report(result: RealizedOptimizationResult) -> No
         "Worst Combinations",
         sorted(traded_rows, key=lambda row: (row.net_pnl, row.average_net_per_trade))[:10],
     )
-    print_losing_setup_examples(result.losing_examples)
+    print_quality_rejection_diagnostics(
+        result.quality_rejection_counts,
+        result.quality_rejected_simulations,
+        result.quality_rejected_losing_count,
+    )
+    print_accepted_loser_clusters(
+        result.accepted_loser_clusters,
+        "Accepted Loser Clusters (Global Across Evaluated Combinations)",
+        repeated_combinations=True,
+    )
+    print_losing_setup_examples(result.losing_examples, result.quality_config)
+    print_compact_realized_sweep_summary(result)
 
 
 def print_realized_optimization_rows(
@@ -1440,7 +1763,8 @@ def print_realized_optimization_rows(
         f"{'Hold':>5} {'ATRTP':>6} {'ATRSL':>6} {'Trades':>7} {'Wins':>6} "
         f"{'Loss':>6} {'Win%':>7} {'Gross':>11} {'Costs':>11} {'Net':>11} "
         f"{'AvgNet':>11} {'PF':>7} {'MaxDD':>10} {'Stop%':>7} {'TP%':>7} "
-        f"{'Hor%':>7} {'AvgHold':>8} {'ExitReasons':<36}"
+        f"{'Hor%':>7} {'AvgHold':>8} {'QRej':>7} {'QRejLoss':>9} "
+        f"{'ExitReasons':<36} {'QualityRejections':<42}"
     )
     for row in rows:
         print(
@@ -1453,7 +1777,10 @@ def print_realized_optimization_rows(
             f"${row.average_net_per_trade:>10.2f} {format_profit_factor(row.profit_factor):>7} "
             f"${row.max_drawdown:>9.2f} {row.stop_loss_hit_rate:>6.1f}% "
             f"{row.take_profit_hit_rate:>6.1f}% {row.max_horizon_exit_rate:>6.1f}% "
-            f"{row.average_hold_candles:>8.1f} {format_exit_reasons(row.exit_reason_counts):<36}"
+            f"{row.average_hold_candles:>8.1f} {row.quality_rejected_count:>7} "
+            f"{row.quality_rejected_losing_count:>9} "
+            f"{format_exit_reasons(row.exit_reason_counts):<36} "
+            f"{format_rejection_counts(row.quality_rejection_counts):<42}"
         )
 
 
@@ -1465,7 +1792,492 @@ def format_profit_factor(value: float | None) -> str:
     return f"{value:.2f}"
 
 
-def print_losing_setup_examples(trades: list[SimulationTrade]) -> None:
+def print_compact_realized_sweep_summary(result: RealizedOptimizationResult) -> None:
+    summary = build_compact_realized_sweep_summary(result)
+
+    print()
+    print("=== Compact Realized Sweep Summary ===")
+    print(f"reject_soft_late_momentum={summary['reject_soft_late_momentum']}")
+    print(f"total_combinations={summary['total_combinations']}")
+    print(f"positive_combinations={summary['positive_combinations']}")
+    print(
+        "positive_combinations_with_at_least_30_trades="
+        f"{summary['positive_combinations_with_at_least_30_trades']}"
+    )
+    print(f"best_overall={format_compact_row_summary(summary['best_overall'])}")
+    print(f"best_at_least_30={format_compact_row_summary(summary['best_at_least_30'])}")
+    print(f"worst_overall={format_compact_row_summary(summary['worst_overall'])}")
+    print(f"best_soft_threshold_set={format_compact_threshold_summary(summary['best_soft_threshold_set'])}")
+    print(f"top_quality_rejections={format_top_quality_rejection_summary(summary['top_quality_rejections'])}")
+    for key in ("rejected_soft_late_long", "rejected_soft_late_short"):
+        count = summary["soft_late_rejections"].get(key, 0)
+        if count > 0:
+            print(f"{key}={count}")
+    print(f"top_accepted_loser_cluster={format_compact_cluster_summary(summary['top_accepted_loser_cluster'])}")
+    print(f"verdict={summary['verdict']}")
+    print("=== End Compact Realized Sweep Summary ===")
+
+
+def build_compact_realized_sweep_summary(result: RealizedOptimizationResult) -> dict[str, Any]:
+    traded_rows = [row for row in result.rows if row.trades > 0]
+    rows_at_least_30 = [row for row in traded_rows if row.trades >= 30]
+    best_overall = max(
+        traded_rows,
+        key=lambda row: (row.net_pnl, row.average_net_per_trade),
+        default=None,
+    )
+    best_at_least_30 = max(
+        rows_at_least_30,
+        key=lambda row: (row.net_pnl, row.average_net_per_trade),
+        default=None,
+    )
+    worst_overall = min(
+        traded_rows,
+        key=lambda row: (row.net_pnl, row.average_net_per_trade),
+        default=None,
+    )
+    return {
+        "reject_soft_late_momentum": "enabled" if result.quality_config.reject_soft_late_momentum else "disabled",
+        "total_combinations": len(result.rows),
+        "positive_combinations": sum(1 for row in traded_rows if row.net_pnl > 0),
+        "positive_combinations_with_at_least_30_trades": sum(
+            1 for row in rows_at_least_30 if row.net_pnl > 0
+        ),
+        "best_overall": compact_realized_row_data(best_overall),
+        "best_at_least_30": compact_realized_row_data(best_at_least_30),
+        "worst_overall": compact_realized_row_data(worst_overall),
+        "best_soft_threshold_set": compact_soft_threshold_data(best_at_least_30 or best_overall),
+        "top_quality_rejections": top_quality_rejection_data(result.quality_rejection_counts),
+        "soft_late_rejections": {
+            "rejected_soft_late_long": result.quality_rejection_counts.get("rejected_soft_late_long", 0),
+            "rejected_soft_late_short": result.quality_rejection_counts.get("rejected_soft_late_short", 0),
+        },
+        "top_accepted_loser_cluster": compact_accepted_loser_cluster_data(result.accepted_loser_clusters),
+        "verdict": compact_realized_verdict(best_at_least_30),
+    }
+
+
+def append_realized_summary_log(
+    result: RealizedOptimizationResult,
+    path: Path,
+    run_label: str | None = None,
+) -> None:
+    summary = build_compact_realized_sweep_summary(result)
+    record = {
+        "logged_at_utc": datetime.now(timezone.utc).isoformat(),
+        "run_label": run_label or "",
+        "mode": "realized_sweep",
+        "summary": summary,
+    }
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(record, sort_keys=True) + "\n")
+
+
+def compact_realized_row_data(row: RealizedOptimizationRow | None) -> dict[str, Any] | None:
+    if row is None:
+        return None
+    return {
+        "symbol": row.symbol,
+        "strategy": row.strategy_name,
+        "target_bps": row.min_target_move_bps,
+        "reward_cost": row.min_reward_cost_ratio,
+        "hold": row.max_hold_candles,
+        "atrtp": row.atr_take_profit_multiplier,
+        "atrsl": row.atr_stop_loss_multiplier,
+        "trades": row.trades,
+        "wins": row.wins,
+        "losses": row.losses,
+        "win_rate": row.win_rate,
+        "gross": row.gross_pnl,
+        "costs": row.costs,
+        "net": row.net_pnl,
+        "avg_net": row.average_net_per_trade,
+        "pf": row.profit_factor,
+        "max_drawdown": row.max_drawdown,
+        "stop_loss_hit_rate": row.stop_loss_hit_rate,
+        "take_profit_hit_rate": row.take_profit_hit_rate,
+        "max_horizon_exit_rate": row.max_horizon_exit_rate,
+        "soft_thresholds": compact_soft_threshold_data(row),
+    }
+
+
+def compact_soft_threshold_data(row: RealizedOptimizationRow | None) -> dict[str, float] | None:
+    if row is None:
+        return None
+    return {
+        "soft_rsi_high_long": row.soft_rsi_high_long,
+        "soft_close_position_high_long": row.soft_close_position_high_long,
+        "soft_rsi_low_short": row.soft_rsi_low_short,
+        "soft_close_position_low_short": row.soft_close_position_low_short,
+    }
+
+
+def top_quality_rejection_data(counts: dict[str, int], limit: int = 8) -> list[dict[str, int | str]]:
+    sorted_counts = sorted(
+        ((reason, count) for reason, count in counts.items() if count > 0),
+        key=lambda item: (-item[1], item[0]),
+    )
+    return [{"reason": reason, "count": count} for reason, count in sorted_counts[:limit]]
+
+
+def compact_accepted_loser_cluster_data(clusters: list[AcceptedLoserCluster]) -> dict[str, Any] | None:
+    if not clusters:
+        return None
+    cluster = clusters[0]
+    return {
+        "side": cluster.side,
+        "strategy": cluster.strategy_name,
+        "exit_reason": cluster.exit_reason,
+        "rsi_band": cluster.rsi_band,
+        "close_position_band": cluster.close_position_band,
+        "hold_band": cluster.hold_band,
+        "soft_label": cluster.soft_label,
+        "count": cluster.count,
+        "net": cluster.net_pnl,
+        "avg_rsi": cluster.average_rsi if cluster.rsi_count > 0 else None,
+        "avg_close": cluster.average_close_position if cluster.close_position_count > 0 else None,
+        "avg_hold": cluster.average_hold,
+        "stop_loss_count": cluster.stop_loss_count,
+    }
+
+
+def format_compact_row_summary(row: dict[str, Any] | None) -> str:
+    if row is None:
+        return "n/a"
+    return (
+        f"{row['symbol']} {row['strategy']} target={row['target_bps']:.2f}bps "
+        f"hold={row['hold']} atrtp={row['atrtp']:.2f} atrsl={row['atrsl']:.2f} "
+        f"trades={row['trades']} net=${row['net']:.2f} avg_net=${row['avg_net']:.2f} "
+        f"pf={format_profit_factor(row['pf'])} "
+        f"{format_compact_threshold_summary(row['soft_thresholds'])}"
+    )
+
+
+def format_compact_threshold_summary(thresholds: dict[str, float] | None) -> str:
+    if thresholds is None:
+        return "n/a"
+    return (
+        f"soft_rsi_high_long={thresholds['soft_rsi_high_long']:.2f} "
+        f"soft_close_position_high_long={thresholds['soft_close_position_high_long']:.2f} "
+        f"soft_rsi_low_short={thresholds['soft_rsi_low_short']:.2f} "
+        f"soft_close_position_low_short={thresholds['soft_close_position_low_short']:.2f}"
+    )
+
+
+def format_top_quality_rejection_summary(rejections: list[dict[str, int | str]]) -> str:
+    if not rejections:
+        return "none"
+    return ", ".join(f"{item['reason']}:{item['count']}" for item in rejections)
+
+
+def format_compact_cluster_summary(cluster: dict[str, Any] | None) -> str:
+    if cluster is None:
+        return "none"
+    return (
+        f"{cluster['side']} {cluster['strategy']} {cluster['exit_reason']} "
+        f"rsi={cluster['rsi_band']} close_position={cluster['close_position_band']} "
+        f"hold={cluster['hold_band']} soft={cluster['soft_label']} count={cluster['count']} "
+        f"net=${cluster['net']:.2f} avg_rsi={format_optional_value(cluster['avg_rsi'])} "
+        f"avg_close={format_optional_value(cluster['avg_close'])} "
+        f"avg_hold={cluster['avg_hold']:.1f} stop_loss_count={cluster['stop_loss_count']}"
+    )
+
+
+def format_compact_realized_row(row: RealizedOptimizationRow | None) -> str:
+    if row is None:
+        return "n/a"
+    return (
+        f"{row.symbol} {row.strategy_name} target={row.min_target_move_bps:.2f}bps "
+        f"hold={row.max_hold_candles} atrtp={row.atr_take_profit_multiplier:.2f} "
+        f"atrsl={row.atr_stop_loss_multiplier:.2f} trades={row.trades} "
+        f"net=${row.net_pnl:.2f} avg_net=${row.average_net_per_trade:.2f} "
+        f"pf={format_profit_factor(row.profit_factor)} "
+        f"{format_compact_soft_thresholds(row)}"
+    )
+
+
+def format_compact_soft_thresholds(row: RealizedOptimizationRow | None) -> str:
+    if row is None:
+        return "n/a"
+    return (
+        f"soft_rsi_high_long={row.soft_rsi_high_long:.2f} "
+        f"soft_close_position_high_long={row.soft_close_position_high_long:.2f} "
+        f"soft_rsi_low_short={row.soft_rsi_low_short:.2f} "
+        f"soft_close_position_low_short={row.soft_close_position_low_short:.2f}"
+    )
+
+
+def format_top_quality_rejections(counts: dict[str, int]) -> str:
+    if not counts:
+        return "none"
+    sorted_counts = sorted(
+        ((reason, count) for reason, count in counts.items() if count > 0),
+        key=lambda item: (-item[1], item[0]),
+    )
+    if not sorted_counts:
+        return "none"
+    return ", ".join(f"{reason}:{count}" for reason, count in sorted_counts[:8])
+
+
+def format_compact_accepted_loser_cluster(clusters: list[AcceptedLoserCluster]) -> str:
+    if not clusters:
+        return "none"
+    cluster = clusters[0]
+    return (
+        f"{cluster.side} {cluster.strategy_name} {cluster.exit_reason} "
+        f"rsi={cluster.rsi_band} close_position={cluster.close_position_band} "
+        f"hold={cluster.hold_band} soft={cluster.soft_label} count={cluster.count} "
+        f"net=${cluster.net_pnl:.2f} avg_rsi={format_optional_float(cluster.average_rsi, cluster.rsi_count)} "
+        f"avg_close={format_optional_float(cluster.average_close_position, cluster.close_position_count)} "
+        f"avg_hold={cluster.average_hold:.1f} stop_loss_count={cluster.stop_loss_count}"
+    )
+
+
+def compact_realized_verdict(best_at_least_30: RealizedOptimizationRow | None) -> str:
+    if best_at_least_30 is None:
+        return "too_few_trades"
+    profit_factor = best_at_least_30.profit_factor
+    if best_at_least_30.net_pnl <= 0 or profit_factor is None or profit_factor <= 1.0:
+        return "not_profitable_at_30_trades"
+    return "potentially_promising_needs_more_testing"
+
+
+def print_quality_rejection_diagnostics(
+    rejection_counts: dict[str, int],
+    rejected_simulations: list[SimulationTrade],
+    rejected_losing_count: int,
+) -> None:
+    print()
+    print("Backtest Quality Filter Rejections (Global Across Evaluated Combinations)")
+    if not rejection_counts:
+        print("none")
+        return
+    keys = (
+        "extreme_rsi_long",
+        "extreme_rsi_short",
+        "rejected_soft_late_long",
+        "rejected_soft_late_short",
+        "exhausted_long",
+        "exhausted_short",
+        "late_entry",
+    )
+    for key in keys:
+        print(f"{key}={rejection_counts.get(key, 0)}")
+    other_counts = {
+        key: count
+        for key, count in sorted(rejection_counts.items())
+        if key not in keys and count > 0
+    }
+    if other_counts:
+        print("other_rejections=" + format_rejection_counts(other_counts))
+    print(f"rejected_candidates_that_simulated_losing_global={rejected_losing_count}")
+    print("note=global rejection totals may include repeated sweep parameter combinations")
+
+
+def build_accepted_loser_clusters(
+    trades: list[SimulationTrade] | None,
+    config: BacktestQualityConfig,
+    limit: int = 12,
+) -> list[AcceptedLoserCluster]:
+    if not trades:
+        return []
+
+    clusters: dict[tuple[str, str, str, str, str, str, str], AcceptedLoserCluster] = {}
+    for trade in trades:
+        if trade.realized_net_pnl >= 0:
+            continue
+        metadata = trade.metadata
+        rsi = metadata_float_or_none(metadata, "rsi")
+        close_position = metadata_float_or_none(metadata, "close_position")
+        soft_label = soft_late_label(trade, rsi, close_position, config)
+        key = (
+            trade.side.value,
+            trade.strategy_name,
+            trade.exit_reason,
+            rsi_band(rsi),
+            close_position_band(close_position),
+            hold_band(trade.hold_candles),
+            soft_label,
+        )
+        cluster = clusters.get(key)
+        if cluster is None:
+            cluster = AcceptedLoserCluster(
+                side=key[0],
+                strategy_name=key[1],
+                exit_reason=key[2],
+                rsi_band=key[3],
+                close_position_band=key[4],
+                hold_band=key[5],
+                soft_label=key[6],
+            )
+            clusters[key] = cluster
+        cluster.count += 1
+        cluster.net_pnl += trade.realized_net_pnl
+        if rsi is not None:
+            cluster.rsi_sum += rsi
+            cluster.rsi_count += 1
+        if close_position is not None:
+            cluster.close_position_sum += close_position
+            cluster.close_position_count += 1
+        cluster.hold_sum += trade.hold_candles
+        if "stop_loss" in trade.exit_reason:
+            cluster.stop_loss_count += 1
+    return sorted(
+        clusters.values(),
+        key=lambda cluster: (cluster.net_pnl, -cluster.count),
+    )[:limit]
+
+
+def print_accepted_loser_clusters(
+    clusters: list[AcceptedLoserCluster],
+    title: str,
+    repeated_combinations: bool,
+) -> None:
+    print()
+    print(title)
+    if repeated_combinations:
+        print("note=clusters may include repeated historical setups across sweep parameter combinations")
+    if not clusters:
+        print("none")
+        return
+    print(
+        f"{'Side':<5} {'Strategy':<18} {'Exit':<18} {'RSI':<8} {'ClosePos':<11} "
+        f"{'Hold':<8} {'SoftLabel':<26} {'Count':>6} {'Net':>11} {'AvgRSI':>8} "
+        f"{'AvgClose':>9} {'AvgHold':>8} {'StopCnt':>8}"
+    )
+    for cluster in clusters:
+        print(
+            f"{cluster.side:<5} {cluster.strategy_name:<18} {cluster.exit_reason:<18} "
+            f"{cluster.rsi_band:<8} {cluster.close_position_band:<11} {cluster.hold_band:<8} "
+            f"{cluster.soft_label:<26} {cluster.count:>6} ${cluster.net_pnl:>10.2f} "
+            f"{format_optional_float(cluster.average_rsi, cluster.rsi_count):>8} "
+            f"{format_optional_float(cluster.average_close_position, cluster.close_position_count):>9} "
+            f"{cluster.average_hold:>8.1f} {cluster.stop_loss_count:>8}"
+        )
+
+
+def rsi_band(value: float | None) -> str:
+    if value is None:
+        return "n/a"
+    if value < 28:
+        return "<28"
+    if value < 32:
+        return "28-32"
+    if value < 36:
+        return "32-36"
+    if value < 45:
+        return "36-45"
+    if value < 55:
+        return "45-55"
+    if value < 64:
+        return "55-64"
+    if value < 68:
+        return "64-68"
+    if value <= 72:
+        return "68-72"
+    return ">72"
+
+
+def close_position_band(value: float | None) -> str:
+    if value is None:
+        return "n/a"
+    if value < 0.10:
+        return "<0.10"
+    if value < 0.25:
+        return "0.10-0.25"
+    if value < 0.40:
+        return "0.25-0.40"
+    if value < 0.60:
+        return "0.40-0.60"
+    if value < 0.75:
+        return "0.60-0.75"
+    if value <= 0.90:
+        return "0.75-0.90"
+    return ">0.90"
+
+
+def hold_band(hold_candles: int) -> str:
+    if hold_candles <= 2:
+        return "<=2"
+    if hold_candles <= 5:
+        return "3-5"
+    if hold_candles <= 10:
+        return "6-10"
+    if hold_candles <= 20:
+        return "11-20"
+    return ">20"
+
+
+def soft_late_label(
+    trade: SimulationTrade,
+    rsi: float | None,
+    close_position: float | None,
+    config: BacktestQualityConfig,
+) -> str:
+    if rsi is None or close_position is None:
+        return "n/a"
+    metadata = trade.metadata
+    soft_rsi_low_short = metadata_float_or_none(metadata, "soft_rsi_low_short")
+    soft_close_position_low_short = metadata_float_or_none(metadata, "soft_close_position_low_short")
+    soft_rsi_high_long = metadata_float_or_none(metadata, "soft_rsi_high_long")
+    soft_close_position_high_long = metadata_float_or_none(metadata, "soft_close_position_high_long")
+    if soft_rsi_low_short is None:
+        soft_rsi_low_short = config.soft_rsi_low_short
+    if soft_close_position_low_short is None:
+        soft_close_position_low_short = config.soft_close_position_low_short
+    if soft_rsi_high_long is None:
+        soft_rsi_high_long = config.soft_rsi_high_long
+    if soft_close_position_high_long is None:
+        soft_close_position_high_long = config.soft_close_position_high_long
+    if (
+        trade.side == Side.SELL
+        and rsi <= soft_rsi_low_short
+        and close_position <= soft_close_position_low_short
+    ):
+        return "soft_late_short_candidate"
+    if (
+        trade.side == Side.BUY
+        and rsi >= soft_rsi_high_long
+        and close_position >= soft_close_position_high_long
+    ):
+        return "soft_late_long_candidate"
+    return "none"
+
+
+def metadata_float_or_none(metadata: dict[str, Any], key: str) -> float | None:
+    value = metadata.get(key)
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    if pd.isna(number):
+        return None
+    return number
+
+
+def format_optional_float(value: float, count: int) -> str:
+    if count <= 0:
+        return "n/a"
+    return f"{value:.2f}"
+
+
+def format_optional_value(value: float | None) -> str:
+    if value is None:
+        return "n/a"
+    return f"{value:.2f}"
+
+
+def format_rejection_counts(counts: dict[str, int]) -> str:
+    if not counts:
+        return "none"
+    return ", ".join(f"{reason}:{count}" for reason, count in counts.items())
+
+
+def print_losing_setup_examples(
+    trades: list[SimulationTrade],
+    config: BacktestQualityConfig,
+) -> None:
     losing_trades = sorted(
         [trade for trade in trades if trade.realized_net_pnl < 0],
         key=lambda trade: trade.realized_net_pnl,
@@ -1475,13 +2287,23 @@ def print_losing_setup_examples(trades: list[SimulationTrade]) -> None:
     if not losing_trades:
         print("none")
         return
+    displayed_rejected = sum(
+        1
+        for trade in losing_trades
+        if str(trade.metadata.get("backtest_quality_reason", "n/a")) not in {"", "pass", "n/a"}
+    )
+    print(f"losing_setup_examples_would_now_be_rejected={displayed_rejected}")
+    print("note=these rows are accepted losing trades unless QualityReason is a reject reason")
     print(
         f"{'Symbol':<10} {'Strategy':<18} {'Side':<5} {'Exit':<20} {'Hold':>5} "
         f"{'Net':>10} {'RSI':>7} {'MACD':>8} {'ATRbps':>8} {'Vol':>6} "
-        f"{'Close':>7} {'StopBps':>8} {'Tgt/Stop':>8} {'QualityReason':<32}"
+        f"{'Close':>7} {'StopBps':>8} {'Tgt/Stop':>8} {'SoftLabel':<26} "
+        f"{'QualityReason':<32}"
     )
     for trade in losing_trades:
         metadata = trade.metadata
+        rsi = metadata_float_or_none(metadata, "rsi")
+        close_position = metadata_float_or_none(metadata, "close_position")
         print(
             f"{trade.symbol:<10} {trade.strategy_name:<18} {trade.side.value:<5} "
             f"{trade.exit_reason:<20} {trade.hold_candles:>5} "
@@ -1493,6 +2315,7 @@ def print_losing_setup_examples(trades: list[SimulationTrade]) -> None:
             f"{format_metadata_float(metadata, 'close_position'):>7} "
             f"{format_metadata_float(metadata, 'stop_move_bps'):>8} "
             f"{format_metadata_float(metadata, 'target_stop_ratio'):>8} "
+            f"{soft_late_label(trade, rsi, close_position, config):<26} "
             f"{str(metadata.get('backtest_quality_reason', 'n/a')):<32}"
         )
 
@@ -1537,6 +2360,18 @@ def parse_float_list(raw: str) -> tuple[float, ...]:
 
 def parse_int_list(raw: str) -> tuple[int, ...]:
     return tuple(int(item.strip()) for item in raw.split(",") if item.strip())
+
+
+def calibration_env_float(name: str, default: float) -> float:
+    raw = os.getenv(name)
+    return default if raw is None or raw == "" else float(raw)
+
+
+def calibration_env_bool(name: str, default: bool) -> bool:
+    raw = os.getenv(name)
+    if raw is None or raw == "":
+        return default
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
 
 
 def format_float_list(values: tuple[float, ...]) -> str:
@@ -1696,6 +2531,127 @@ def build_arg_parser() -> argparse.ArgumentParser:
         help="ATR multiple for optional calibration-only trailing stop simulation.",
     )
     parser.add_argument(
+        "--exhaustion-rsi-high",
+        type=float,
+        default=calibration_env_float("EXHAUSTION_RSI_HIGH", DEFAULT_EXHAUSTION_RSI_HIGH),
+        help="Calibration-only late-long RSI threshold. Env: EXHAUSTION_RSI_HIGH.",
+    )
+    parser.add_argument(
+        "--exhaustion-rsi-low",
+        type=float,
+        default=calibration_env_float("EXHAUSTION_RSI_LOW", DEFAULT_EXHAUSTION_RSI_LOW),
+        help="Calibration-only late-short RSI threshold. Env: EXHAUSTION_RSI_LOW.",
+    )
+    parser.add_argument(
+        "--exhaustion-close-position-high",
+        type=float,
+        default=calibration_env_float(
+            "EXHAUSTION_CLOSE_POSITION_HIGH",
+            DEFAULT_EXHAUSTION_CLOSE_POSITION_HIGH,
+        ),
+        help="Calibration-only close-near-high threshold. Env: EXHAUSTION_CLOSE_POSITION_HIGH.",
+    )
+    parser.add_argument(
+        "--exhaustion-close-position-low",
+        type=float,
+        default=calibration_env_float(
+            "EXHAUSTION_CLOSE_POSITION_LOW",
+            DEFAULT_EXHAUSTION_CLOSE_POSITION_LOW,
+        ),
+        help="Calibration-only close-near-low threshold. Env: EXHAUSTION_CLOSE_POSITION_LOW.",
+    )
+    parser.add_argument(
+        "--exhaustion-candle-atr-multiplier",
+        type=float,
+        default=calibration_env_float(
+            "EXHAUSTION_CANDLE_ATR_MULTIPLIER",
+            DEFAULT_EXHAUSTION_CANDLE_ATR_MULTIPLIER,
+        ),
+        help="Calibration-only body/range ATR multiple for exhaustion. Env: EXHAUSTION_CANDLE_ATR_MULTIPLIER.",
+    )
+    parser.add_argument(
+        "--extreme-rsi-high",
+        type=float,
+        default=calibration_env_float("EXTREME_RSI_HIGH", DEFAULT_EXTREME_RSI_HIGH),
+        help="Calibration-only hard RSI ceiling for long momentum/breakout entries. Env: EXTREME_RSI_HIGH.",
+    )
+    parser.add_argument(
+        "--extreme-rsi-low",
+        type=float,
+        default=calibration_env_float("EXTREME_RSI_LOW", DEFAULT_EXTREME_RSI_LOW),
+        help="Calibration-only hard RSI floor for short momentum/breakout entries. Env: EXTREME_RSI_LOW.",
+    )
+    parser.add_argument(
+        "--soft-rsi-low-short",
+        type=float,
+        default=calibration_env_float("SOFT_RSI_LOW_SHORT", DEFAULT_SOFT_RSI_LOW_SHORT),
+        help="Diagnostics-only soft late-short RSI label threshold. Env: SOFT_RSI_LOW_SHORT.",
+    )
+    parser.add_argument(
+        "--soft-close-position-low-short",
+        type=float,
+        default=calibration_env_float(
+            "SOFT_CLOSE_POSITION_LOW_SHORT",
+            DEFAULT_SOFT_CLOSE_POSITION_LOW_SHORT,
+        ),
+        help="Diagnostics-only soft late-short close-position label threshold. Env: SOFT_CLOSE_POSITION_LOW_SHORT.",
+    )
+    parser.add_argument(
+        "--soft-rsi-high-long",
+        type=float,
+        default=calibration_env_float("SOFT_RSI_HIGH_LONG", DEFAULT_SOFT_RSI_HIGH_LONG),
+        help="Diagnostics-only soft late-long RSI label threshold. Env: SOFT_RSI_HIGH_LONG.",
+    )
+    parser.add_argument(
+        "--soft-close-position-high-long",
+        type=float,
+        default=calibration_env_float(
+            "SOFT_CLOSE_POSITION_HIGH_LONG",
+            DEFAULT_SOFT_CLOSE_POSITION_HIGH_LONG,
+        ),
+        help="Diagnostics-only soft late-long close-position label threshold. Env: SOFT_CLOSE_POSITION_HIGH_LONG.",
+    )
+    parser.add_argument(
+        "--soft-rsi-high-long-sweep",
+        help=(
+            "Comma-separated calibration-only sweep for soft late-long RSI threshold. "
+            f"Example: {format_float_list(DEFAULT_SOFT_RSI_HIGH_LONG_SWEEP)}."
+        ),
+    )
+    parser.add_argument(
+        "--soft-close-position-high-long-sweep",
+        help=(
+            "Comma-separated calibration-only sweep for soft late-long close-position threshold. "
+            f"Example: {format_float_list(DEFAULT_SOFT_CLOSE_POSITION_HIGH_LONG_SWEEP)}."
+        ),
+    )
+    parser.add_argument(
+        "--soft-rsi-low-short-sweep",
+        help=(
+            "Comma-separated calibration-only sweep for soft late-short RSI threshold. "
+            f"Example: {format_float_list(DEFAULT_SOFT_RSI_LOW_SHORT_SWEEP)}."
+        ),
+    )
+    parser.add_argument(
+        "--soft-close-position-low-short-sweep",
+        help=(
+            "Comma-separated calibration-only sweep for soft late-short close-position threshold. "
+            f"Example: {format_float_list(DEFAULT_SOFT_CLOSE_POSITION_LOW_SHORT_SWEEP)}."
+        ),
+    )
+    parser.add_argument(
+        "--reject-soft-late-momentum",
+        action="store_true",
+        default=calibration_env_bool(
+            "REJECT_SOFT_LATE_MOMENTUM",
+            DEFAULT_REJECT_SOFT_LATE_MOMENTUM,
+        ),
+        help=(
+            "Calibration-only: reject momentum entries matching soft late-entry labels. "
+            "Default off. Env: REJECT_SOFT_LATE_MOMENTUM."
+        ),
+    )
+    parser.add_argument(
         "--max-hold-sweep",
         default=format_int_list(DEFAULT_REALIZED_MAX_HOLD_SWEEP),
         help="Comma-separated max-hold candle values for --realized-sweep.",
@@ -1709,6 +2665,24 @@ def build_arg_parser() -> argparse.ArgumentParser:
         "--atr-stop-sweep",
         default=format_float_list(DEFAULT_REALIZED_ATR_STOP_SWEEP),
         help="Comma-separated ATR stop-loss multipliers for --realized-sweep.",
+    )
+    parser.add_argument(
+        "--save-summary-log",
+        action="store_true",
+        help=(
+            "Append a compact realized-sweep summary JSONL record for later comparison. "
+            "Only writes when this flag is provided."
+        ),
+    )
+    parser.add_argument(
+        "--summary-log-path",
+        type=Path,
+        default=DEFAULT_SUMMARY_LOG_PATH,
+        help=f"JSONL summary log path used with --save-summary-log. Default: {DEFAULT_SUMMARY_LOG_PATH}.",
+    )
+    parser.add_argument(
+        "--run-label",
+        help="Optional label stored in the summary log, e.g. soft_late_sweep_15m.",
     )
     parser.add_argument(
         "--self-test",
@@ -1743,6 +2717,40 @@ def main() -> None:
     quality_filter_enabled = (
         args.backtest_quality_filter or args.realized_sweep
     ) and not args.disable_backtest_quality_filter
+    quality_config = BacktestQualityConfig(
+        exhaustion_rsi_high=args.exhaustion_rsi_high,
+        exhaustion_rsi_low=args.exhaustion_rsi_low,
+        exhaustion_close_position_high=args.exhaustion_close_position_high,
+        exhaustion_close_position_low=args.exhaustion_close_position_low,
+        exhaustion_candle_atr_multiplier=args.exhaustion_candle_atr_multiplier,
+        extreme_rsi_high=args.extreme_rsi_high,
+        extreme_rsi_low=args.extreme_rsi_low,
+        soft_rsi_low_short=args.soft_rsi_low_short,
+        soft_close_position_low_short=args.soft_close_position_low_short,
+        soft_rsi_high_long=args.soft_rsi_high_long,
+        soft_close_position_high_long=args.soft_close_position_high_long,
+        reject_soft_late_momentum=args.reject_soft_late_momentum,
+    )
+    soft_rsi_high_long_sweep = (
+        parse_float_list(args.soft_rsi_high_long_sweep)
+        if args.soft_rsi_high_long_sweep
+        else (quality_config.soft_rsi_high_long,)
+    )
+    soft_close_position_high_long_sweep = (
+        parse_float_list(args.soft_close_position_high_long_sweep)
+        if args.soft_close_position_high_long_sweep
+        else (quality_config.soft_close_position_high_long,)
+    )
+    soft_rsi_low_short_sweep = (
+        parse_float_list(args.soft_rsi_low_short_sweep)
+        if args.soft_rsi_low_short_sweep
+        else (quality_config.soft_rsi_low_short,)
+    )
+    soft_close_position_low_short_sweep = (
+        parse_float_list(args.soft_close_position_low_short_sweep)
+        if args.soft_close_position_low_short_sweep
+        else (quality_config.soft_close_position_low_short,)
+    )
     symbols = tuple(symbol.strip() for symbol in args.symbols.split(",") if symbol.strip())
     historical = load_historical_inputs(
         symbols=symbols,
@@ -1760,13 +2768,21 @@ def main() -> None:
             max_hold_sweep=parse_int_list(args.max_hold_sweep),
             atr_tp_sweep=parse_float_list(args.atr_tp_sweep),
             atr_stop_sweep=parse_float_list(args.atr_stop_sweep),
+            soft_rsi_high_long_sweep=soft_rsi_high_long_sweep,
+            soft_close_position_high_long_sweep=soft_close_position_high_long_sweep,
+            soft_rsi_low_short_sweep=soft_rsi_low_short_sweep,
+            soft_close_position_low_short_sweep=soft_close_position_low_short_sweep,
             diagnostic_notional=args.diagnostic_notional,
             quality_filter_enabled=quality_filter_enabled,
             trailing_exits_enabled=args.backtest_trailing_exits,
             breakeven_trigger_r=args.breakeven_trigger_r,
             trailing_atr_multiplier=args.trailing_atr_multiplier,
+            quality_config=quality_config,
         )
-        print_realized_optimization_report(optimizer.run(historical))
+        result = optimizer.run(historical)
+        if args.save_summary_log:
+            append_realized_summary_log(result, args.summary_log_path, args.run_label)
+        print_realized_optimization_report(result)
         return
     calibrator = HistoricalStrategyCalibrator(
         settings=settings,
@@ -1778,6 +2794,7 @@ def main() -> None:
         trailing_exits_enabled=args.backtest_trailing_exits,
         breakeven_trigger_r=args.breakeven_trigger_r,
         trailing_atr_multiplier=args.trailing_atr_multiplier,
+        quality_config=quality_config,
     )
     print_report(calibrator.run(historical))
 
