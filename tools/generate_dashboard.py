@@ -161,13 +161,26 @@ def render_dashboard(
   <link rel="stylesheet" href="assets/styles.css">
   <script src="assets/app.js" defer></script>
 </head>
-<body>
+<body class="locked">
+  <div class="gate-overlay" id="gate-overlay" role="dialog" aria-modal="true" aria-labelledby="gate-title">
+    <div class="gate-panel">
+      <p class="eyebrow">Restricted research dashboard</p>
+      <h2 id="gate-title">Access Required</h2>
+      <p class="muted">Enter the dashboard passphrase to view local BTCUSDT research summaries.</p>
+      <div class="gate-form">
+        <input id="gate-input" type="password" autocomplete="current-password" placeholder="Password" aria-label="Dashboard password">
+        <button id="gate-button" type="button">Unlock</button>
+      </div>
+      <p class="gate-error" id="gate-error" aria-live="polite"></p>
+    </div>
+  </div>
+  <div id="research-shell" class="site-content" aria-hidden="true">
   <header class="hero">
     <div class="shell hero-grid">
       <div>
-        <p class="eyebrow">BTCUSDT paper/backtesting research</p>
+        <p class="eyebrow">BTCUSDT futures paper/backtesting research</p>
         <h1>BTC Scalping Research Dashboard</h1>
-        <p class="hero-copy">Fee-aware, risk-aware calibration for BTC/USDT short-term strategies across 1m, 5m, and 15m data. Results are research diagnostics only.</p>
+        <p class="hero-copy">Fee-aware, liquidation-aware calibration for BTCUSDT futures-style short-term strategies across 1m, 5m, and 15m data. Results are research diagnostics only.</p>
         <div class="status-strip">
           <span class="pill ok">Paper mode default</span>
           <span class="pill ok">Live trading disabled</span>
@@ -185,6 +198,17 @@ def render_dashboard(
   </header>
 
   <main class="shell layout">
+    <section class="panel span-12 system-status-panel">
+      <div class="section-head">
+        <div>
+          <p class="eyebrow">Executive Summary</p>
+          <h2>SYSTEM STATUS: {escape(system_status(latest_summary))}</h2>
+        </div>
+        <span class="tag {status_class(latest_summary)}">PRIMARY FAILURE: {escape(primary_failure_text(latest_summary))}</span>
+      </div>
+      <p class="muted">Targets are evaluated only from historical, fee-aware, slippage-aware BTCUSDT research summaries. If a target is not supported out-of-sample, the dashboard marks it as not achieved or unrealistic given data.</p>
+    </section>
+
     <section class="panel span-12">
       <div class="section-head">
         <div>
@@ -197,7 +221,7 @@ def render_dashboard(
         {metric_card("Mode", "Paper default", "good")}
         {metric_card("Live trading", "Disabled", "good")}
         {metric_card("Leverage", "None", "good")}
-        {metric_card("Universe", symbol_filter, "good")}
+        {metric_card("Universe", f"{symbol_filter} futures", "good")}
         {metric_card("Timeframes", "1m / 5m / 15m", "neutral")}
       </div>
       <p class="muted">This public page contains compact summaries only. Raw text outputs, JSONL logs, historical CSVs, API keys, and local environment files stay ignored and local.</p>
@@ -281,6 +305,11 @@ def render_dashboard(
     </section>
 
     <section class="panel span-6">
+      <h2>Agent Comparison</h2>
+      {render_agent_comparison(latest_summary)}
+    </section>
+
+    <section class="panel span-6">
       <h2>Latest Run Performance Summary</h2>
       {render_performance_table(latest_summary)}
     </section>
@@ -293,6 +322,16 @@ def render_dashboard(
     <section class="panel span-6">
       <h2>Daily PnL Distribution</h2>
       {render_daily_distribution_block(daily_metrics)}
+    </section>
+
+    <section class="panel span-6">
+      <h2>Daily Return Distribution Chart</h2>
+      {render_daily_return_chart(daily_metrics)}
+    </section>
+
+    <section class="panel span-6">
+      <h2>Trades/Day vs PF Chart</h2>
+      {render_trades_pf_chart(leaderboard_rows)}
     </section>
 
     <section class="panel span-6">
@@ -361,6 +400,7 @@ def render_dashboard(
   <footer class="shell footer">
     Generated at {escape(generated_at)} from compact local summary records only.
   </footer>
+  </div>
 </body>
 </html>
 """
@@ -387,6 +427,9 @@ def render_latest_table(records: list[SummaryRecord]) -> str:
               <th>Candles</th>
               <th>Notional</th>
               <th>Calib min net</th>
+              <th>Agent</th>
+              <th>Lev</th>
+              <th>Liq</th>
               <th>Trades/day</th>
               <th>Median day</th>
               <th>Fee drag</th>
@@ -416,6 +459,9 @@ def render_latest_row(record: SummaryRecord) -> str:
               <td>{escape(whole(summary.get("total_candles")))}</td>
               <td>{money(summary.get("diagnostic_notional"))}</td>
               <td>{money(summary.get("calibration_min_expected_net_profit"))}</td>
+              <td>{escape(text_value(summary.get("agent_name")))}</td>
+              <td>{number(summary.get("leverage_used"))}</td>
+              <td>{escape(text_value(summary.get("liquidation_events")))}</td>
               <td>{number(summary.get("trades_per_day"))}</td>
               <td>{percent(summary.get("median_daily_return_pct"))}</td>
               <td>{percent(summary.get("fee_drag_pct"))}</td>
@@ -564,6 +610,77 @@ def render_daily_distribution_block(metrics: dict[str, Any]) -> str:
     return '<div class="stacked">' + "".join(
         f'<div><strong>{escape(label)}</strong><span>{escape(value)}</span></div>' for label, value in rows
     ) + "</div>"
+
+
+def render_daily_return_chart(metrics: dict[str, Any]) -> str:
+    if not metrics:
+        return '<p class="muted">No daily distribution data yet.</p>'
+    values = [
+        ("Avg", to_float(metrics.get("avg_daily_return_pct")) or 0.0),
+        ("Median", to_float(metrics.get("median_daily_return_pct")) or 0.0),
+        ("Best", to_float(metrics.get("best_daily_return_pct")) or 0.0),
+        ("Worst", to_float(metrics.get("worst_daily_return_pct")) or 0.0),
+        ("Fee drag", -(to_float(metrics.get("fee_drag_pct")) or 0.0)),
+    ]
+    return render_bar_chart(values, "%")
+
+
+def render_trades_pf_chart(rows: list[dict[str, Any]]) -> str:
+    if not rows:
+        return '<p class="muted">No strategy rows yet.</p>'
+    points = []
+    for row in rows[:10]:
+        label = f"{row.get('timeframe', 'n/a')} {row.get('strategy', 'n/a')}"
+        tpd = to_float(row.get("trades_per_day")) or 0.0
+        pf_value = to_float(row.get("pf")) or 0.0
+        points.append((label, min(tpd / DAILY_TRADE_TARGET * 100, 100.0), pf_value))
+    body = "".join(
+        f'<div class="scatter-row"><span>{escape(label)}</span><div class="scatter-track"><i style="left:{x:.2f}%"></i></div><strong>TPD {x / 100 * DAILY_TRADE_TARGET:.2f} | PF {pf_value:.2f}</strong></div>'
+        for label, x, pf_value in points
+    )
+    return f'<div class="scatter">{body}</div>'
+
+
+def render_bar_chart(values: list[tuple[str, float]], suffix: str) -> str:
+    if not values:
+        return '<p class="muted">n/a</p>'
+    max_abs = max(abs(value) for _, value in values) or 1.0
+    body = ""
+    for label, value in values:
+        width = min(abs(value) / max_abs * 100, 100.0)
+        class_name = "good" if value > 0 else "bad" if value < 0 else "neutral"
+        body += (
+            f'<div class="bar-row"><span>{escape(label)}</span>'
+            f'<div class="bar-shell"><i class="{class_name}" style="width:{width:.2f}%"></i></div>'
+            f'<strong>{value:.2f}{escape(suffix)}</strong></div>'
+        )
+    return f'<div class="bar-chart">{body}</div>'
+
+
+def render_agent_comparison(summary: dict[str, Any]) -> str:
+    agents = summary.get("agent_comparison")
+    if not isinstance(agents, list) or not agents:
+        return '<p class="muted">Agent comparison appears after a fast futures scalping-agent search run.</p>'
+    body = ""
+    for agent in agents:
+        if not isinstance(agent, dict):
+            continue
+        best = safe_dict(agent.get("best"))
+        best30 = safe_dict(agent.get("best_30"))
+        body += (
+            "<tr>"
+            f"<td>{escape(text_value(agent.get('agent_name')))}</td>"
+            f"<td>{escape(text_value(agent.get('parameter_sets')))}</td>"
+            f"<td>{escape(text_value(agent.get('positive_rows')))}</td>"
+            f"<td>{escape(format_row(best))}</td>"
+            f"<td>{escape(format_row(best30))}</td>"
+            "</tr>"
+        )
+    return (
+        '<div class="table-wrap compact"><table><thead><tr>'
+        '<th>Agent</th><th>Sets</th><th>Positive</th><th>Best</th><th>Best 30+</th>'
+        f'</tr></thead><tbody>{body}</tbody></table></div>'
+    )
 
 
 def render_timeframe_completion(rows: list[dict[str, Any]]) -> str:
@@ -761,6 +878,7 @@ def render_strategy_leaderboard(rows: list[dict[str, Any]]) -> str:
             "<tr>"
             f"<td><span class=\"rank\">{index}</span></td>"
             f"<td>{escape(text_value(row.get('timeframe')))}</td>"
+            f"<td>{escape(text_value(row.get('agent_name')))}</td>"
             f"<td>{escape(text_value(row.get('strategy')))}</td>"
             f"<td>{whole(row.get('trades'))}</td>"
             f"<td>{number(row.get('trades_per_day'))}</td>"
@@ -773,7 +891,7 @@ def render_strategy_leaderboard(rows: list[dict[str, Any]]) -> str:
         )
     return (
         '<div class="table-wrap compact"><table class="leaderboard"><thead><tr>'
-        '<th>#</th><th>Tf</th><th>Strategy</th><th>Trades</th><th>TPD</th>'
+        '<th>#</th><th>Tf</th><th>Agent</th><th>Strategy</th><th>Trades</th><th>TPD</th>'
         '<th>Net</th><th>PF</th><th>Med day</th><th>Fee drag</th><th>WF</th>'
         f'</tr></thead><tbody>{body}</tbody></table></div>'
     )
@@ -804,11 +922,41 @@ def verdict_class(value: Any) -> str:
     return "neutral"
 
 
+def system_status(summary: dict[str, Any]) -> str:
+    explicit = str(summary.get("system_status") or "")
+    if explicit:
+        return explicit.replace("_", " ")
+    verdict = str(summary.get("verdict") or "")
+    if "robust" in verdict or "promising" in verdict:
+        return "RESEARCH CANDIDATE FOUND"
+    return "NOT PROFITABLE"
+
+
+def primary_failure_text(summary: dict[str, Any]) -> str:
+    explicit = str(summary.get("primary_failure") or "")
+    if explicit:
+        return explicit.replace("_", " ")
+    reasons = summary.get("overfit_warning_reasons")
+    if isinstance(reasons, list) and reasons:
+        joined = " + ".join(str(item).replace("_", " ") for item in reasons[:2])
+        return joined.upper()
+    return "FEE DRAG + LOW EDGE"
+
+
+def status_class(summary: dict[str, Any]) -> str:
+    status = system_status(summary)
+    if "CANDIDATE" in status:
+        return "good"
+    return "bad"
+
+
 def target_class(value: Any) -> str:
     verdict = str(value or "")
     if verdict == "achieved":
         return "good"
-    if "not achieved" in verdict:
+    if "unrealistic" in verdict:
+        return "bad"
+    if "not achieved" in verdict or "not_achieved" in verdict:
         return "warn"
     return verdict_class(verdict)
 
@@ -904,6 +1052,28 @@ def scalping_leaderboard_rows(records: list[SummaryRecord]) -> list[dict[str, An
     rows: list[dict[str, Any]] = []
     seen: set[tuple[str, str, str, str, str, str]] = set()
     for record in records:
+        logged_rows = record.summary.get("strategy_leaderboard")
+        if isinstance(logged_rows, list):
+            for item in logged_rows:
+                row = safe_dict(item)
+                if row:
+                    candidate = {
+                        "run_label": record.run_label,
+                        "timeframe": row.get("timeframe") or format_list(record.summary.get("timeframes")),
+                        "agent_name": row.get("agent_name"),
+                        "strategy": row.get("strategy"),
+                        "trades": row.get("trades"),
+                        "trades_per_day": row.get("trades_per_day"),
+                        "net": row.get("net"),
+                        "pf": row.get("pf"),
+                        "median_daily_return_pct": row.get("median_daily_return_pct"),
+                        "fee_drag_pct": row.get("fee_drag_pct"),
+                        "walk_forward_verdict": row.get("verdict") or row.get("walk_forward_verdict"),
+                    }
+                    dedupe_key = leaderboard_dedupe_key(candidate)
+                    if dedupe_key not in seen:
+                        seen.add(dedupe_key)
+                        rows.append(candidate)
         for field in ("best_at_least_30", "best_overall"):
             row = safe_dict(record.summary.get(field))
             if not row:
@@ -921,14 +1091,7 @@ def scalping_leaderboard_rows(records: list[SummaryRecord]) -> list[dict[str, An
                 "fee_drag_pct": daily.get("fee_drag_pct"),
                 "walk_forward_verdict": row.get("walk_forward_verdict") or record.summary.get("walk_forward_verdict"),
             }
-            dedupe_key = (
-                str(leaderboard_row["run_label"]),
-                str(leaderboard_row["timeframe"]),
-                str(leaderboard_row["strategy"]),
-                str(leaderboard_row["trades"]),
-                str(leaderboard_row["net"]),
-                str(leaderboard_row["pf"]),
-            )
+            dedupe_key = leaderboard_dedupe_key(leaderboard_row)
             if dedupe_key in seen:
                 continue
             seen.add(dedupe_key)
@@ -936,12 +1099,23 @@ def scalping_leaderboard_rows(records: list[SummaryRecord]) -> list[dict[str, An
     return sorted(
         rows,
         key=lambda row: (
-            target_score(row.get("trades_per_day"), DAILY_TRADE_TARGET),
             score_float(row.get("net"), missing=float("-inf")),
             score_float(row.get("pf"), missing=0.0),
+            target_score(row.get("trades_per_day"), DAILY_TRADE_TARGET),
             -score_float(row.get("fee_drag_pct"), missing=0.0),
         ),
         reverse=True,
+    )
+
+
+def leaderboard_dedupe_key(row: dict[str, Any]) -> tuple[str, str, str, str, str, str]:
+    return (
+        str(row.get("run_label")),
+        str(row.get("timeframe")),
+        str(row.get("strategy")),
+        str(row.get("trades")),
+        str(row.get("net")),
+        str(row.get("pf")),
     )
 
 

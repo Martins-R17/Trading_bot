@@ -65,7 +65,17 @@ tools\run_btc_scalping_1m.bat --confirm-large-1m
 tools\run_btc_scalping_suite.bat
 ```
 
-The suite runs 15m and 5m only. Run 1m separately after runtime and strategy evidence justify it.
+The scalping scripts use the fast BTCUSDT futures research engine in
+`backtesting.scalping_search`. It precomputes indicators once, scans balanced
+internal agent parameter sets, applies Binance futures-style fee defaults, and
+simulates liquidation risk when leverage is enabled. The suite runs 15m and 5m
+only. Run 1m separately with `--confirm-large-1m`.
+
+For a direct 1m run:
+
+```bat
+tools\run_btc_scalping_1m.bat --no-pause --confirm-large-1m
+```
 
 ## Reporting
 
@@ -88,6 +98,8 @@ docs\index.html
 ```
 
 Dashboard metrics include diagnostic notional, calibration-only minimum expected net profit, trades/day, median daily return, profitable days, days above 5%, max daily drawdown, fee drag, walk-forward verdict, and compact best/worst candidates.
+The dashboard also includes a simple session-based frontend gate, system status,
+agent comparison, daily distribution visuals, and trades/day versus PF visuals.
 
 ## Acceptance Criteria
 
