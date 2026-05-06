@@ -22,6 +22,13 @@ from urllib.request import Request, urlopen
 PUBLIC_BINANCE_BASE_URL = "https://api.binance.com"
 KLINES_PATH = "/api/v3/klines"
 MAX_KLINES_PER_REQUEST = 1000
+ALLOWED_CALIBRATION_INTERVALS = ("1m", "5m", "15m")
+DEFAULT_BACKTEST_DAYS = 365 * 3
+INTERVAL_ALIASES = {
+    "1min": "1m",
+    "5min": "5m",
+    "15min": "15m",
+}
 INTERVAL_MS = {
     "1m": 60_000,
     "3m": 3 * 60_000,
@@ -75,10 +82,28 @@ def parse_symbols(raw: str) -> tuple[str, ...]:
     return symbols
 
 
+def parse_intervals(raw: str) -> tuple[str, ...]:
+    intervals = tuple(item.strip() for item in raw.split(",") if item.strip())
+    if not intervals:
+        raise ValueError("at least one interval is required")
+    unique: list[str] = []
+    for interval in intervals:
+        validated = validate_interval(interval)
+        if validated not in unique:
+            unique.append(validated)
+    return tuple(unique)
+
+
 def validate_interval(interval: str) -> str:
+    interval = INTERVAL_ALIASES.get(interval.strip(), interval.strip())
+    if interval not in ALLOWED_CALIBRATION_INTERVALS:
+        valid = ", ".join(ALLOWED_CALIBRATION_INTERVALS)
+        raise ValueError(
+            f"invalid calibration interval {interval!r}; allowed intervals: {valid}"
+        )
     if interval not in INTERVAL_MS:
         valid = ", ".join(INTERVAL_MS)
-        raise ValueError(f"invalid interval {interval!r}; valid intervals: {valid}")
+        raise ValueError(f"unsupported Binance interval {interval!r}; valid intervals: {valid}")
     return interval
 
 
@@ -255,13 +280,40 @@ def format_utc(timestamp_ms: int | None) -> str:
     return datetime.fromtimestamp(timestamp_ms / 1000, tz=timezone.utc).isoformat()
 
 
-def calibration_command(output_dir: Path, symbols: tuple[str, ...], limit: int) -> str:
-    return (
+def calibration_limit_for_days(interval: str, days: float) -> int:
+    interval_ms = INTERVAL_MS[validate_interval(interval)]
+    return max(1, int(days * 24 * 60 * 60 * 1000 / interval_ms))
+
+
+def default_output_dir(interval: str, days: float) -> Path:
+    years = round(days / 365)
+    if years == 3 and abs(days - DEFAULT_BACKTEST_DAYS) < 0.001:
+        return Path(f"data/historical_3y_{interval}")
+    safe_days = int(round(days))
+    return Path(f"data/historical_{safe_days}d_{interval}")
+
+
+def output_dir_for_interval(base_output_dir: Path | None, interval: str, days: float) -> Path:
+    return base_output_dir if base_output_dir is not None else default_output_dir(interval, days)
+
+
+def calibration_command(
+    output_dir: Path,
+    symbols: tuple[str, ...],
+    interval: str,
+    days: float,
+    limit: int | None,
+) -> str:
+    command = (
         "python -m backtesting.calibration "
         f"--data-dir {output_dir} "
         f"--symbols {','.join(symbols)} "
-        f"--limit {limit}"
+        f"--timeframe {interval} "
+        f"--years {days / 365:.2f}"
     )
+    if limit is not None:
+        command += f" --limit {limit}"
+    return command
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
@@ -275,20 +327,26 @@ def build_arg_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--interval",
-        default="1m",
-        help="Binance public kline interval, e.g. 1m,5m,15m,1h,1d.",
+        help="Single calibration interval. Allowed: 1m,5m,15m. Overrides --intervals when provided.",
+    )
+    parser.add_argument(
+        "--intervals",
+        default=",".join(ALLOWED_CALIBRATION_INTERVALS),
+        help="Comma-separated calibration intervals. Allowed/default: 1m,5m,15m.",
     )
     parser.add_argument(
         "--days",
         type=float,
-        default=7.0,
-        help="Number of recent days of public candles to download.",
+        default=float(DEFAULT_BACKTEST_DAYS),
+        help="Number of recent days of public candles to download. Default: 1095 (~3 years).",
     )
     parser.add_argument(
         "--output-dir",
         type=Path,
-        default=Path("data/historical"),
-        help="Directory for downloaded calibration CSVs.",
+        help=(
+            "Directory for downloaded calibration CSVs. If omitted, uses clear "
+            "per-timeframe directories such as data/historical_3y_15m."
+        ),
     )
     parser.add_argument(
         "--sleep",
@@ -305,8 +363,10 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--calibration-limit",
         type=int,
-        default=1000,
-        help="Limit value shown in the printed calibration command.",
+        help=(
+            "Optional limit value shown in printed calibration commands. Omit for full "
+            "downloaded history; --limit intentionally truncates calibration input."
+        ),
     )
     return parser
 
@@ -314,36 +374,42 @@ def build_arg_parser() -> argparse.ArgumentParser:
 def main() -> None:
     args = build_arg_parser().parse_args()
     symbols = parse_symbols(args.symbols)
-    interval = validate_interval(args.interval)
+    intervals = (validate_interval(args.interval),) if args.interval else parse_intervals(args.intervals)
     if args.days <= 0:
         raise SystemExit("--days must be greater than 0")
 
     print("Public Binance kline downloader")
     print("calibration only")
     print("no API key, no account access, no private endpoints, no trading")
+    print(f"days={args.days:g} intervals={','.join(intervals)}")
+    if "1m" in intervals and args.days >= DEFAULT_BACKTEST_DAYS:
+        print("warning=1m 3-year data is large and slow; test 15m first, then 5m, then 1m")
+    print("note=printed calibration commands omit --limit by default so full downloaded history is used")
 
     results: list[DownloadResult] = []
     failures: list[str] = []
-    for symbol in symbols:
-        try:
-            result = download_symbol(
-                symbol=symbol,
-                interval=interval,
-                days=args.days,
-                output_dir=args.output_dir,
-                request_sleep_seconds=args.sleep,
-                timeout_seconds=args.timeout,
-            )
-        except (ValueError, PublicKlineDownloadError) as exc:
-            failures.append(f"{symbol}: {exc}")
-            continue
+    for interval in intervals:
+        output_dir = output_dir_for_interval(args.output_dir, interval, args.days)
+        for symbol in symbols:
+            try:
+                result = download_symbol(
+                    symbol=symbol,
+                    interval=interval,
+                    days=args.days,
+                    output_dir=output_dir,
+                    request_sleep_seconds=args.sleep,
+                    timeout_seconds=args.timeout,
+                )
+            except (ValueError, PublicKlineDownloadError) as exc:
+                failures.append(f"{symbol} {interval}: {exc}")
+                continue
 
-        results.append(result)
-        print(
-            f"saved {result.exchange_symbol} {result.interval} rows={result.rows} "
-            f"first={format_utc(result.first_timestamp)} "
-            f"last={format_utc(result.last_timestamp)} path={result.path}"
-        )
+            results.append(result)
+            print(
+                f"saved {result.exchange_symbol} {result.interval} rows={result.rows} "
+                f"first={format_utc(result.first_timestamp)} "
+                f"last={format_utc(result.last_timestamp)} path={result.path}"
+            )
 
     if failures:
         print("Download errors")
@@ -351,8 +417,10 @@ def main() -> None:
             print(failure)
 
     if results:
-        print("Calibration command")
-        print(calibration_command(args.output_dir, symbols, args.calibration_limit))
+        print("Calibration commands")
+        for interval in intervals:
+            output_dir = output_dir_for_interval(args.output_dir, interval, args.days)
+            print(calibration_command(output_dir, symbols, interval, args.days, args.calibration_limit))
 
     if failures and not results:
         raise SystemExit(1)

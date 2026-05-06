@@ -95,6 +95,12 @@ def print_table(records: list[dict[str, Any]], path: Path) -> None:
     columns = (
         ("RunLabel", 24),
         ("Timestamp", 19),
+        ("Symbols", 10),
+        ("Tf", 8),
+        ("Candles", 9),
+        ("Window", 7),
+        ("Notional", 10),
+        ("CalibNet", 10),
         ("SoftLate", 9),
         ("Total", 7),
         ("Pos", 5),
@@ -110,6 +116,12 @@ def print_table(records: list[dict[str, Any]], path: Path) -> None:
         values = (
             truncate(str(record.get("run_label") or "n/a"), 24),
             truncate(str(record.get("logged_at_utc") or "n/a"), 19),
+            truncate(format_list(summary.get("symbols")), 10),
+            truncate(format_list(summary.get("timeframes")), 8),
+            str(summary.get("total_candles", "n/a")),
+            str(summary.get("signal_window_bars", "n/a")),
+            format_money(summary.get("diagnostic_notional")),
+            format_money(summary.get("calibration_min_expected_net_profit")),
             truncate(str(summary.get("reject_soft_late_momentum") or "n/a"), 9),
             str(summary.get("total_combinations", "n/a")),
             str(summary.get("positive_combinations", "n/a")),
@@ -135,6 +147,16 @@ def format_best(value: Any) -> str:
     net = format_money(row.get("net"))
     pf = format_number(row.get("pf"))
     return f"{symbol} {strategy} trades={trades} net={net} pf={pf}"
+
+
+def format_list(value: Any) -> str:
+    if isinstance(value, list):
+        return ",".join(str(item) for item in value) or "n/a"
+    if isinstance(value, tuple):
+        return ",".join(str(item) for item in value) or "n/a"
+    if value:
+        return str(value)
+    return "n/a"
 
 
 def format_money(value: Any) -> str:

@@ -134,6 +134,11 @@ class Backtester:
         diagnostics = {
             "total_candidates": total_candidates,
             "total_signals_checked": total_signals_checked,
+            "diagnostic_notional": max(
+                self.risk_settings.min_position_notional,
+                self.risk_settings.diagnostic_notional,
+            ),
+            "calibration_min_expected_net_profit": self.risk_settings.calibration_min_expected_net_profit_usd,
             "rejection_counts_by_detailed_reason": dict(rejection_counts),
             "best_rejected_by_strategy": best_rejected_by_strategy,
             "closest_to_approved": closest_to_approved or {},
@@ -261,9 +266,7 @@ class Backtester:
 
         diagnostic_notional = max(
             self.risk_settings.min_position_notional,
-            self.risk_settings.initial_equity
-            * self.risk_settings.max_position_notional_fraction
-            * self.risk_settings.max_leverage,
+            self.risk_settings.diagnostic_notional,
         )
         estimated_costs = diagnostic_notional * self.risk_settings.round_trip_taker_cost_rate
         expected_gross_reward = diagnostic_notional * target_move_bps / 10_000
@@ -275,7 +278,7 @@ class Backtester:
         if row.get("expected_net_profit_check") == "not_checked":
             row["expected_net_profit_check"] = (
                 "pass"
-                if row["expected_net_profit"] >= self.risk_settings.min_expected_net_profit_usd
+                if row["expected_net_profit"] >= self.risk_settings.calibration_min_expected_net_profit_usd
                 else "fail"
             )
 

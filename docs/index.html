@@ -3,59 +3,128 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Trading Bot Research Dashboard</title>
+  <title>BTC Scalping Research Dashboard</title>
+  <meta name="description" content="BTC-only paper and backtesting research dashboard.">
   <link rel="stylesheet" href="assets/styles.css">
+  <script src="assets/app.js" defer></script>
 </head>
 <body>
   <header class="hero">
-    <div class="shell">
-      <h1>Trading Bot Research Dashboard</h1>
-      <p>Local calibration and backtest dashboard for the Binance crypto paper trading bot. This page contains compact summaries only and is safe for GitHub Pages review.</p>
-      <div class="status-strip">
-        <span class="pill ok">Paper mode default</span>
-        <span class="pill ok">Live trading disabled</span>
-        <span class="pill ok">No leverage workflow</span>
-        <span class="pill warn">Research/backtesting only</span>
+    <div class="shell hero-grid">
+      <div>
+        <p class="eyebrow">BTCUSDT paper/backtesting research</p>
+        <h1>BTC Scalping Research Dashboard</h1>
+        <p class="hero-copy">Fee-aware, risk-aware calibration for BTC/USDT short-term strategies across 1m, 5m, and 15m data. Results are research diagnostics only.</p>
+        <div class="status-strip">
+          <span class="pill ok">Paper mode default</span>
+          <span class="pill ok">Live trading disabled</span>
+          <span class="pill ok">No leverage</span>
+          <span class="pill ok">BTC-only default</span>
+          <span class="pill warn">Backtesting only</span>
+        </div>
+      </div>
+      <div class="hero-card">
+        <span>Latest verdict</span>
+        <strong>not_profitable_at_30_trades</strong>
+        <small>Generated 2026-05-06 09:44:48 UTC</small>
       </div>
     </div>
   </header>
 
-  <main class="shell grid">
-    <section class="panel">
-      <h2>Current Focus</h2>
-      <p>Improve calibration diagnostics, compare realized sweep summaries, and determine whether any backtest-only quality filters produce robust 30+ trade results before promotion to paper execution is considered.</p>
-      <div class="notice">This dashboard is not financial advice. Results are historical research diagnostics and may not predict future performance.</div>
+  <main class="shell layout">
+    <section class="panel span-12">
+      <div class="section-head">
+        <div>
+          <p class="eyebrow">Safety status</p>
+          <h2>Research Guardrails</h2>
+        </div>
+        <span class="tag neutral">Not financial advice</span>
+      </div>
+      <div class="metric-grid five">
+        
+        <div class="metric">
+          <div class="label">Mode</div>
+          <div class="value good" data-count="">Paper default</div>
+        </div>
+        
+        <div class="metric">
+          <div class="label">Live trading</div>
+          <div class="value good" data-count="">Disabled</div>
+        </div>
+        
+        <div class="metric">
+          <div class="label">Leverage</div>
+          <div class="value good" data-count="">None</div>
+        </div>
+        
+        <div class="metric">
+          <div class="label">Universe</div>
+          <div class="value good" data-count="">BTC/USDT</div>
+        </div>
+        
+        <div class="metric">
+          <div class="label">Timeframes</div>
+          <div class="value neutral" data-count="">1m / 5m / 15m</div>
+        </div>
+      </div>
+      <p class="muted">This public page contains compact summaries only. Raw text outputs, JSONL logs, historical CSVs, API keys, and local environment files stay ignored and local.</p>
     </section>
 
-    <section class="panel">
-      <h2>Run Overview</h2>
+    <section class="panel span-12">
+      <div class="section-head">
+        <div>
+          <p class="eyebrow">Latest run</p>
+          <h2>BTC Compact Summary</h2>
+        </div>
+        <span class="tag bad">not_profitable_at_30_trades</span>
+      </div>
       <div class="metric-grid">
         
         <div class="metric">
-          <div class="label">Summary records</div>
-          <div class="value">4</div>
+          <div class="label">BTC records</div>
+          <div class="value neutral" data-count="2">2</div>
         </div>
         
         <div class="metric">
-          <div class="label">Latest notional</div>
-          <div class="value">$100.00</div>
+          <div class="label">Ignored non-BTC/legacy</div>
+          <div class="value neutral" data-count="4">4</div>
         </div>
         
         <div class="metric">
-          <div class="label">Latest verdict</div>
-          <div class="value warn">too_few_trades</div>
+          <div class="label">Diagnostic notional</div>
+          <div class="value neutral" data-count="100.00">$100.00</div>
         </div>
         
         <div class="metric">
-          <div class="label">Generated</div>
-          <div class="value">2026-05-06 02:43:07 UTC</div>
+          <div class="label">Calibration min net</div>
+          <div class="value neutral" data-count="0.25">$0.25</div>
+        </div>
+        
+        <div class="metric">
+          <div class="label">Total candles</div>
+          <div class="value neutral" data-count="315360">315,360</div>
+        </div>
+        
+        <div class="metric">
+          <div class="label">Signal window</div>
+          <div class="value neutral" data-count="500">500</div>
+        </div>
+        
+        <div class="metric">
+          <div class="label">Data days</div>
+          <div class="value neutral" data-count="1095.0">1,095.0</div>
         </div>
       </div>
-      <p class="muted">Source log: data\backtest_logs\realized_sweep_summary.jsonl. Raw JSONL logs remain local and ignored by git.</p>
+      <div class="data-window"><span>Symbols: BTC/USDT</span><span>Timeframes: 5m</span><span>Start: 2023-05-07T09:25:00+00:00</span><span>End: 2026-05-06T09:20:00+00:00</span><span>Production target: 75.00 bps</span><span>Production reward/cost: 3.00x</span></div>
     </section>
 
-    <section class="panel">
-      <h2>Latest Compact Backtest Summaries</h2>
+    <section class="panel span-12">
+      <div class="section-head">
+        <div>
+          <p class="eyebrow">Performance</p>
+          <h2>Latest BTC Runs</h2>
+        </div>
+      </div>
       
       <div class="table-wrap">
         <table>
@@ -63,10 +132,11 @@
             <tr>
               <th>Run label</th>
               <th>Timestamp</th>
+              <th>Timeframe</th>
+              <th>Candles</th>
               <th>Notional</th>
+              <th>Calib min net</th>
               <th>Soft late</th>
-              <th>Total</th>
-              <th>Pos</th>
               <th>Pos 30+</th>
               <th>Best overall</th>
               <th>Best 30+</th>
@@ -74,166 +144,154 @@
             </tr>
           </thead>
           <tbody>
-            
             <tr>
-              <td>soft_thresholds_focused</td>
-              <td>2026-05-06T01:17:48.194536+00:00</td>
-              <td>n/a</td>
-              <td>enabled</td>
-              <td>48</td>
-              <td>16</td>
-              <td>0</td>
-              <td>ETH/USDT breakout target=75.00bps hold=16 trades=9 net=$17.34 avg=$1.93 pf=1.24</td>
-              <td>ETH/USDT momentum target=75.00bps hold=16 trades=30 net=$-85.50 avg=$-2.85 pf=0.74</td>
-              <td><span class="tag bad">not_profitable_at_30_trades</span></td>
-            </tr>
-
-            <tr>
-              <td>baseline_focused_no_soft_reject</td>
-              <td>2026-05-06T01:19:40.940955+00:00</td>
-              <td>n/a</td>
-              <td>disabled</td>
-              <td>3</td>
-              <td>1</td>
-              <td>0</td>
-              <td>ETH/USDT breakout target=75.00bps hold=16 trades=9 net=$17.34 avg=$1.93 pf=1.24</td>
-              <td>ETH/USDT momentum target=75.00bps hold=16 trades=32 net=$-114.94 avg=$-3.59 pf=0.68</td>
-              <td><span class="tag bad">not_profitable_at_30_trades</span></td>
-            </tr>
-
-            <tr>
-              <td>momentum_diagnostics_focused</td>
-              <td>2026-05-06T01:33:54.584918+00:00</td>
-              <td>n/a</td>
-              <td>enabled</td>
-              <td>48</td>
-              <td>16</td>
-              <td>0</td>
-              <td>ETH/USDT breakout target=75.00bps hold=16 trades=9 net=$17.34 avg=$1.93 pf=1.24</td>
-              <td>ETH/USDT momentum target=75.00bps hold=16 trades=30 net=$-85.50 avg=$-2.85 pf=0.74</td>
-              <td><span class="tag bad">not_profitable_at_30_trades</span></td>
-            </tr>
-
-            <tr>
-              <td>entry_momentum_diagnostics_100_notional</td>
-              <td>2026-05-06T01:51:57.848184+00:00</td>
+              <td>btc_15m_3y_single_baseline_20260506_101337</td>
+              <td>2026-05-06 09:20:39</td>
+              <td>15m</td>
+              <td>105,120</td>
               <td>$100.00</td>
+              <td>$0.25</td>
               <td>enabled</td>
-              <td>48</td>
-              <td>16</td>
               <td>0</td>
-              <td>ETH/USDT breakout target=75.00bps hold=16 trades=6 net=$0.84 avg=$0.14 pf=1.42</td>
-              <td>n/a</td>
-              <td><span class="tag warn">too_few_trades</span></td>
+              <td>BTC/USDT breakout target=75.00bps hold=16 trades=395 net=$-103.32 pf=0.51</td>
+              <td>BTC/USDT breakout target=75.00bps hold=16 trades=395 net=$-103.32 pf=0.51</td>
+              <td><span class="tag bad">not_profitable_at_30_trades</span></td>
             </tr>
-          </tbody>
+
+            <tr>
+              <td>btc_5m_3y_single_baseline_20260506_102421</td>
+              <td>2026-05-06 09:43:10</td>
+              <td>5m</td>
+              <td>315,360</td>
+              <td>$100.00</td>
+              <td>$0.25</td>
+              <td>enabled</td>
+              <td>0</td>
+              <td>BTC/USDT breakout target=75.00bps hold=16 trades=474 net=$-132.97 pf=0.41</td>
+              <td>BTC/USDT breakout target=75.00bps hold=16 trades=474 net=$-132.97 pf=0.41</td>
+              <td><span class="tag bad">not_profitable_at_30_trades</span></td>
+            </tr></tbody>
         </table>
       </div>
 
     </section>
 
-    <section class="panel third">
+    <section class="panel span-4">
       <h2>Best Overall</h2>
       
       <div class="result-line">
-        <strong>ETH/USDT breakout</strong>
-        <span>Trades: 9 | Net: $17.34 | Avg: $1.93 | PF: 1.24</span>
-        <span>Target: 75.00bps | Reward/cost: 3.00x | Hold: 16</span>
-        <span>ATR TP: 3.00 | ATR SL: 1.50</span>
-        <span>soft thresholds: long_rsi=67.00, long_close=0.80, short_rsi=33.00, short_close=0.20</span>
+        <strong>BTC/USDT breakout</strong>
+        <span>Trades 395 | Net $-103.32 | Avg $-0.26 | PF 0.51</span>
+        <span>Target 75.00 bps | Reward/cost 3.00x | Hold 16</span>
+        <span>ATR TP 3.00 | ATR SL 1.50</span>
+        <small>soft thresholds: long_rsi=65.00, long_close=0.70, short_rsi=35.00, short_close=0.30</small>
       </div>
 
     </section>
 
-    <section class="panel third">
+    <section class="panel span-4">
       <h2>Best With 30+ Trades</h2>
       
       <div class="result-line">
-        <strong>ETH/USDT momentum</strong>
-        <span>Trades: 30 | Net: $-85.50 | Avg: $-2.85 | PF: 0.74</span>
-        <span>Target: 75.00bps | Reward/cost: 3.00x | Hold: 16</span>
-        <span>ATR TP: 3.00 | ATR SL: 1.50</span>
-        <span>soft thresholds: long_rsi=67.00, long_close=0.90, short_rsi=33.00, short_close=0.30</span>
+        <strong>BTC/USDT breakout</strong>
+        <span>Trades 395 | Net $-103.32 | Avg $-0.26 | PF 0.51</span>
+        <span>Target 75.00 bps | Reward/cost 3.00x | Hold 16</span>
+        <span>ATR TP 3.00 | ATR SL 1.50</span>
+        <small>soft thresholds: long_rsi=65.00, long_close=0.70, short_rsi=35.00, short_close=0.30</small>
       </div>
 
     </section>
 
-    <section class="panel third">
+    <section class="panel span-4">
       <h2>Worst Overall</h2>
       
       <div class="result-line">
-        <strong>ETH/USDT momentum</strong>
-        <span>Trades: 31 | Net: $-145.08 | Avg: $-4.68 | PF: 0.60</span>
-        <span>Target: 75.00bps | Reward/cost: 3.00x | Hold: 16</span>
-        <span>ATR TP: 3.00 | ATR SL: 1.50</span>
-        <span>soft thresholds: long_rsi=67.00, long_close=0.80, short_rsi=33.00, short_close=0.20</span>
+        <strong>BTC/USDT momentum</strong>
+        <span>Trades 684 | Net $-148.09 | Avg $-0.22 | PF 0.53</span>
+        <span>Target 75.00 bps | Reward/cost 3.00x | Hold 16</span>
+        <span>ATR TP 3.00 | ATR SL 1.50</span>
+        <small>soft thresholds: long_rsi=65.00, long_close=0.70, short_rsi=35.00, short_close=0.30</small>
       </div>
 
     </section>
 
-    <section class="panel half">
-      <h2>Latest Quality Diagnostics</h2>
-      <h3>Top quality rejections</h3><ul class="clean"><li>volume_expansion_not_confirmed: 1984</li><li>extreme_rsi_short: 496</li><li>extreme_rsi_long: 480</li><li>bearish_close_not_confirmed: 432</li><li>exhausted_short: 376</li><li>bullish_close_not_confirmed: 368</li><li>volatility_expansion_not_confirmed: 368</li><li>exhausted_long: 340</li></ul>
-<h3>Top accepted loser cluster</h3><p>sell momentum exit=stop_loss_hit count=16 net=$-17.19 rsi=32-36 close=0.10-0.25 hold=11-20 label=none</p>
-<h3>Momentum side summary</h3><p>Buy: trades=236 net=$5.12 avg=$0.02 pf=1.06<br>Sell: trades=68 net=$-64.47 avg=$-0.95 pf=0.00</p>
-<h3>Best entry-only momentum cluster at 30+</h3><p>buy trades=32 net=$-3.62 avg=$-0.11 pf=0.55 rsi=55-64 macd=pos_strong trend=strong_extended close=0.75-0.90</p>
+    <section class="panel span-6">
+      <h2>Timeframe Comparison</h2>
+      <div class="table-wrap compact"><table><thead><tr><th>Timeframe</th><th>Runs</th><th>Best net</th><th>Best PF</th><th>Best 30+</th></tr></thead><tbody><tr><td>15m</td><td>1</td><td>$-103.32</td><td>0.51</td><td>BTC/USDT breakout target=75.00bps hold=16 trades=395 net=$-103.32 pf=0.51</td></tr><tr><td>5m</td><td>1</td><td>$-132.97</td><td>0.41</td><td>BTC/USDT breakout target=75.00bps hold=16 trades=474 net=$-132.97 pf=0.41</td></tr></tbody></table></div>
     </section>
 
-    <section class="panel half">
-      <h2>Verdicts</h2>
-      <ul class="clean"><li>not_profitable_at_30_trades: 3</li><li>too_few_trades: 1</li></ul>
+    <section class="panel span-6">
+      <h2>Strategy Comparison</h2>
+      <div class="table-wrap compact"><table><thead><tr><th>Strategy</th><th>Rows</th><th>Best net</th><th>Best PF</th><th>Best 30+</th></tr></thead><tbody><tr><td>breakout</td><td>4</td><td>$-103.32</td><td>0.51</td><td>BTC/USDT breakout target=75.00bps hold=16 trades=395 net=$-103.32 pf=0.51</td></tr><tr><td>momentum</td><td>2</td><td>$-146.70</td><td>0.59</td><td>BTC/USDT momentum target=75.00bps hold=16 trades=694 net=$-146.70 pf=0.59</td></tr></tbody></table></div>
     </section>
 
-    <section class="panel half">
+    <section class="panel span-6">
+      <h2>Momentum Diagnostics</h2>
+      <div class="stacked"><div><strong>Buy momentum</strong><span>trades=305 net=$-67.37 avg=$-0.22 pf=0.48</span></div><div><strong>Sell momentum</strong><span>trades=379 net=$-80.71 avg=$-0.21 pf=0.57</span></div><div><strong>Best entry-only cluster</strong><span>buy trades=2 wins=2 net=$3.61 avg=$1.81 pf=inf rsi=64-68 macd=pos_strong trend=strong_extended close=0.60-0.75</span></div><div><strong>Best 30+ entry-only cluster</strong><span>n/a</span></div><div><strong>Worst entry-only cluster</strong><span>buy trades=10 wins=1 net=$-4.93 avg=$-0.49 pf=0.16 rsi=64-68 macd=pos_strong trend=strong_extended close=0.60-0.75</span></div></div>
+    </section>
+
+    <section class="panel span-6">
+      <h2>Quality Diagnostics</h2>
+      <h3>Top quality rejections</h3><ul class="clean"><li>volatility_expansion_not_confirmed: 3815</li><li>volume_expansion_not_confirmed: 3662</li><li>trend_regime_not_clear: 3181</li><li>extreme_rsi_short: 1978</li><li>extreme_rsi_long: 1817</li><li>rejected_soft_late_short: 1535</li><li>bearish_close_not_confirmed: 1302</li><li>exhausted_short: 1283</li></ul>
+<h3>Top accepted loser cluster</h3><p>sell momentum exit=stop_loss_hit count=11 net=$-11.65 rsi=28-32 close=0.25-0.40 hold=6-10 label=none</p>
+<h3>Soft-late rejections</h3><p>long=1266 | short=1535</p>
+    </section>
+
+    <section class="panel span-6">
+      <h2>Walk-Forward Validation</h2>
+      <ul class="clean">
+        <li>Status: not complete yet for full 3-year BTC data.</li>
+        <li>Acceptance requires positive out-of-sample net PnL after fees and slippage.</li>
+        <li>Minimum bar: 30 trades; preferred bar: 100+ trades with stable PF and drawdown.</li>
+        <li>Overfit warning remains active until train/validation/test or walk-forward results agree.</li>
+      </ul>
+    </section>
+
+    <section class="panel span-6">
       <h2>Known Issues</h2>
       <ul class="clean">
-        <li>Realized historical simulations have not produced robust profitable 30+ trade settings yet.</li>
-        <li>Momentum sells have been weaker than buys in recent diagnostics.</li>
-        <li>Fixed dollar expected-net thresholds can over-filter small diagnostic notional runs.</li>
-        <li>Raw result text files, raw JSONL logs, and historical CSVs must remain local and ignored.</li>
+        <li>Recent realized sweeps have not shown robust profitable 30+ trade settings.</li>
+        <li>Expected-only edge can look positive while realized exit simulation remains negative.</li>
+        <li>Short momentum has been weaker than buy momentum in prior diagnostics.</li>
+        <li>1m 3-year data can be large and should run after 15m and 5m checks.</li>
       </ul>
     </section>
 
-    <section class="panel half">
-      <h2>Future Tasks</h2>
-      <ul class="clean">
-        <li>Review a calibration-only expected-net threshold that scales with diagnostic notional.</li>
-        <li>Compare soft-late threshold sweeps with at least 30 trades.</li>
-        <li>Study entry-only momentum clusters before promoting any filter.</li>
-        <li>Test longer history in order: 15m first, then 5m, then 1m.</li>
-      </ul>
+    <section class="panel span-6">
+      <h2>Next Tasks</h2>
+      <ul class="clean"><li>Do not run BTC 1m until runtime is acceptable; 1m is much larger than 5m.</li><li>Add walk-forward splits before promoting any strategy rule.</li><li>Investigate breakout and momentum failures by entry-only clusters, fees, and stop-loss hit rate.</li><li>Keep scalping microstructure disabled by default unless backtest-only evidence improves.</li></ul>
     </section>
 
-    <section class="panel half">
+    <section class="panel span-6">
       <h2>Ideas Backlog</h2>
       <ul class="clean">
-        <li>Add chart snapshots from compact summaries only.</li>
-        <li>Add per-run notes without exposing raw logs.</li>
-        <li>Track BTC-only default behavior separately from explicit manual ETH backtests.</li>
-        <li>Separate production thresholds from calibration diagnostics in reports.</li>
+        <li>Fee and slippage sensitivity tables for BTC-only candidates.</li>
+        <li>Entry-only clusters by session/time-of-day if timestamp diagnostics justify it.</li>
+        <li>Drawdown and equity-curve snapshots from compact summaries.</li>
+        <li>Walk-forward stability score for candidate ranking.</li>
       </ul>
     </section>
 
-    <section class="panel half">
+    <section class="panel span-6">
       <h2>Local Workflow</h2>
-      <div class="code">tools\run_focused_backtest.bat<br>tools\compare_logs.bat<br>tools\update_dashboard.bat<br>tools\safe_git_status.bat</div>
-      <p class="muted">The backtest helper writes ignored local files under data/. The dashboard generator reads compact JSONL summaries and updates docs/index.html.</p>
+      <div class="code">tools\run_btc_15m_3y_backtest.bat<br>tools\run_btc_5m_3y_backtest.bat<br>tools\run_btc_1m_3y_backtest.bat<br>tools\run_btc_optimization_suite.bat<br>tools\compare_logs.bat<br>tools\update_dashboard.bat<br>tools\safe_git_status.bat</div>
+      <p class="muted">Backtest helpers write ignored local files under data/. The dashboard generator publishes compact, non-secret HTML under docs/.</p>
     </section>
 
-    <section class="panel">
+    <section class="panel span-6">
       <h2>GitHub Workflow</h2>
       <ol>
-        <li>Run local backtests manually with the helper script.</li>
-        <li>Regenerate the dashboard locally.</li>
-        <li>Review changed files with <span class="code">tools\safe_git_status.bat</span>.</li>
-        <li>Commit only code and docs. Keep data/*.txt, data/backtest_logs/, historical CSVs, .env, .venv, and caches local.</li>
-        <li>Push only after explicit approval.</li>
+        <li>Run BTC-only backtests locally.</li>
+        <li>Regenerate the dashboard.</li>
+        <li>Review changed files with <span class="code-inline">tools\safe_git_status.bat</span>.</li>
+        <li>Commit only code, docs, and tooling.</li>
+        <li>Never commit data/*.txt, data/backtest_logs/, historical CSVs, .env, .venv, cache, or pyc files.</li>
       </ol>
     </section>
   </main>
 
   <footer class="shell footer">
-    Generated at 2026-05-06 02:43:07 UTC from compact local summary records only.
+    Generated at 2026-05-06 09:44:48 UTC from compact local summary records only.
   </footer>
 </body>
 </html>

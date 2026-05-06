@@ -206,6 +206,13 @@ class TradingBot:
             f"min_net={self._money(risk.min_expected_net_profit_usd)} | "
             f"skip_duplicate_snapshots={self.settings.trading.skip_duplicate_market_snapshots}"
         )
+        if self.settings.trading.paper_trade:
+            print(
+                f"paper_initial_equity={self._money(risk.initial_equity)} | "
+                f"diagnostic_notional={self._money(risk.diagnostic_notional)}"
+            )
+        else:
+            print(f"diagnostic_notional={self._money(risk.diagnostic_notional)}")
 
     def _print_ai_review_dashboard(self) -> None:
         print("AI Review")
@@ -1112,7 +1119,7 @@ class TradingBot:
         risk = self.settings.risk
         diagnostic_notional = max(
             risk.min_position_notional,
-            self.risk_manager.state.equity * risk.max_position_notional_fraction * risk.max_leverage,
+            risk.diagnostic_notional,
         )
         estimated_costs = diagnostic_notional * risk.round_trip_taker_cost_rate
         expected_gross_reward = diagnostic_notional * target_move_bps / 10_000
@@ -1623,7 +1630,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--symbols",
         type=str,
-        help="Comma-separated symbols, e.g. BTC/USDT,ETH/USDT.",
+        help="Comma-separated symbols, e.g. BTC/USDT.",
     )
     parser.add_argument(
         "--max-iterations",
@@ -1638,6 +1645,7 @@ def apply_cli_overrides(settings: Settings, args: argparse.Namespace) -> Setting
 
     trading = settings.trading
     app = settings.app
+    risk = settings.risk
 
     if args.paper:
         trading = replace(
@@ -1645,6 +1653,7 @@ def apply_cli_overrides(settings: Settings, args: argparse.Namespace) -> Setting
             paper_trade=True,
             enable_live_trading=False,
         )
+        risk = replace(risk, initial_equity=trading.paper_initial_equity)
 
     if args.symbols:
         trading = replace(
@@ -1659,7 +1668,7 @@ def apply_cli_overrides(settings: Settings, args: argparse.Namespace) -> Setting
     if args.max_iterations is not None:
         app = replace(app, max_iterations=args.max_iterations)
 
-    return replace(settings, trading=trading, app=app)
+    return replace(settings, trading=trading, app=app, risk=risk)
 
 
 async def async_main() -> None:

@@ -55,6 +55,15 @@ DEFAULT_SOFT_CLOSE_POSITION_HIGH_LONG_SWEEP = (0.70, 0.80, 0.90)
 DEFAULT_SOFT_RSI_LOW_SHORT_SWEEP = (31.0, 33.0, 35.0)
 DEFAULT_SOFT_CLOSE_POSITION_LOW_SHORT_SWEEP = (0.10, 0.20, 0.30)
 DEFAULT_SUMMARY_LOG_PATH = Path("data/backtest_logs/realized_sweep_summary.jsonl")
+ALLOWED_BACKTEST_TIMEFRAMES = ("1m", "5m", "15m")
+DEFAULT_BACKTEST_YEARS = 3.0
+DEFAULT_SIGNAL_WINDOW_BARS = 500
+TIMEFRAME_MINUTES = {"1m": 1, "5m": 5, "15m": 15}
+TIMEFRAME_ALIASES = {
+    "1min": "1m",
+    "5min": "5m",
+    "15min": "15m",
+}
 CORE_CHECKS = ("rsi_check", "ema_trend_check", "macd_check", "volatility_atr_check")
 
 
@@ -300,7 +309,10 @@ class CalibrationResult:
     production_target_move_bps: float
     production_reward_cost_ratio: float
     production_min_expected_net_profit: float
+    calibration_min_expected_net_profit: float
     diagnostic_notional: float
+    signal_window_bars: int = DEFAULT_SIGNAL_WINDOW_BARS
+    data_profiles: list[dict[str, Any]] = field(default_factory=list)
     max_hold_candles: int = 60
     quality_filter_enabled: bool = False
     trailing_exits_enabled: bool = False
@@ -416,7 +428,10 @@ class RealizedOptimizationResult:
     production_target_move_bps: float
     production_reward_cost_ratio: float
     production_min_expected_net_profit: float
+    calibration_min_expected_net_profit: float
     diagnostic_notional: float
+    signal_window_bars: int = DEFAULT_SIGNAL_WINDOW_BARS
+    data_profiles: list[dict[str, Any]] = field(default_factory=list)
     quality_filter_enabled: bool = False
     trailing_exits_enabled: bool = False
     quality_config: BacktestQualityConfig = field(default_factory=lambda: BacktestQualityConfig())
@@ -426,6 +441,8 @@ class RealizedOptimizationResult:
     quality_rejected_simulations: list[SimulationTrade] = field(default_factory=list)
     quality_rejected_losing_count: int = 0
     accepted_loser_clusters: list["AcceptedLoserCluster"] = field(default_factory=list)
+    momentum_entry_clusters: list["MomentumEntryCluster"] = field(default_factory=list)
+    momentum_entry_only_clusters: list["MomentumEntryOnlyCluster"] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -483,6 +500,143 @@ class AcceptedLoserCluster:
         if self.count <= 0:
             return 0.0
         return self.hold_sum / self.count
+
+
+@dataclass
+class MomentumEntryCluster:
+    """Accepted momentum trade cluster for entry-feature diagnostics."""
+
+    side: str
+    rsi_band: str
+    macd_band: str
+    trend_regime: str
+    volume_band: str
+    atr_bps_band: str
+    close_position_band: str
+    exit_reason: str
+    count: int = 0
+    wins: int = 0
+    losses: int = 0
+    gross_pnl: float = 0.0
+    costs: float = 0.0
+    net_pnl: float = 0.0
+    gross_profit: float = 0.0
+    gross_loss: float = 0.0
+    hold_sum: int = 0
+
+    def record(self, trade: SimulationTrade) -> None:
+        self.count += 1
+        self.gross_pnl += trade.realized_gross_pnl
+        self.costs += trade.total_costs
+        self.net_pnl += trade.realized_net_pnl
+        self.hold_sum += trade.hold_candles
+        if trade.realized_net_pnl > 0:
+            self.wins += 1
+            self.gross_profit += trade.realized_net_pnl
+        else:
+            self.losses += 1
+            self.gross_loss += abs(trade.realized_net_pnl)
+
+    @property
+    def win_rate(self) -> float:
+        if self.count <= 0:
+            return 0.0
+        return self.wins / self.count * 100
+
+    @property
+    def average_net_per_trade(self) -> float:
+        if self.count <= 0:
+            return 0.0
+        return self.net_pnl / self.count
+
+    @property
+    def profit_factor(self) -> float | None:
+        if self.count <= 0:
+            return None
+        if self.gross_loss <= 0:
+            return None if self.gross_profit <= 0 else float("inf")
+        return self.gross_profit / self.gross_loss
+
+    @property
+    def average_hold(self) -> float:
+        if self.count <= 0:
+            return 0.0
+        return self.hold_sum / self.count
+
+
+@dataclass
+class MomentumEntryOnlyCluster:
+    """Accepted momentum trade cluster keyed only by entry-time features."""
+
+    side: str
+    rsi_band: str
+    macd_band: str
+    trend_regime: str
+    volume_band: str
+    atr_bps_band: str
+    close_position_band: str
+    count: int = 0
+    wins: int = 0
+    losses: int = 0
+    gross_pnl: float = 0.0
+    costs: float = 0.0
+    net_pnl: float = 0.0
+    gross_profit: float = 0.0
+    gross_loss: float = 0.0
+    hold_sum: int = 0
+    exit_reason_counts: dict[str, int] = field(default_factory=dict)
+
+    def record(self, trade: SimulationTrade) -> None:
+        self.count += 1
+        self.gross_pnl += trade.realized_gross_pnl
+        self.costs += trade.total_costs
+        self.net_pnl += trade.realized_net_pnl
+        self.hold_sum += trade.hold_candles
+        self.exit_reason_counts[trade.exit_reason] = self.exit_reason_counts.get(trade.exit_reason, 0) + 1
+        if trade.realized_net_pnl > 0:
+            self.wins += 1
+            self.gross_profit += trade.realized_net_pnl
+        else:
+            self.losses += 1
+            self.gross_loss += abs(trade.realized_net_pnl)
+
+    @property
+    def win_rate(self) -> float:
+        if self.count <= 0:
+            return 0.0
+        return self.wins / self.count * 100
+
+    @property
+    def average_net_per_trade(self) -> float:
+        if self.count <= 0:
+            return 0.0
+        return self.net_pnl / self.count
+
+    @property
+    def profit_factor(self) -> float | None:
+        if self.count <= 0:
+            return None
+        if self.gross_loss <= 0:
+            return None if self.gross_profit <= 0 else float("inf")
+        return self.gross_profit / self.gross_loss
+
+    @property
+    def average_hold(self) -> float:
+        if self.count <= 0:
+            return 0.0
+        return self.hold_sum / self.count
+
+    @property
+    def stop_loss_hit_count(self) -> int:
+        return self.exit_reason_counts.get("stop_loss_hit", 0)
+
+    @property
+    def take_profit_hit_count(self) -> int:
+        return self.exit_reason_counts.get("take_profit_hit", 0)
+
+    @property
+    def max_horizon_exit_count(self) -> int:
+        return self.exit_reason_counts.get("max_horizon_exit", 0)
 
 
 @dataclass(frozen=True)
@@ -812,6 +966,9 @@ class HistoricalStrategyCalibrator:
         target_sweep: tuple[float, ...] = DEFAULT_TARGET_SWEEP,
         reward_cost_sweep: tuple[float, ...] = DEFAULT_REWARD_COST_SWEEP,
         diagnostic_notional: float | None = None,
+        calibration_min_expected_net_profit: float | None = None,
+        timeframe: str | None = None,
+        signal_window_bars: int = DEFAULT_SIGNAL_WINDOW_BARS,
         max_hold_candles: int = 60,
         quality_filter_enabled: bool = False,
         trailing_exits_enabled: bool = False,
@@ -823,6 +980,16 @@ class HistoricalStrategyCalibrator:
         self.target_sweep = target_sweep
         self.reward_cost_sweep = reward_cost_sweep
         self.diagnostic_notional = diagnostic_notional or self._default_diagnostic_notional()
+        self.timeframe = timeframe or settings.trading.timeframe
+        self.signal_window_bars = max(100, int(signal_window_bars))
+        self.calibration_min_expected_net_profit = max(
+            0.0,
+            float(
+                calibration_min_expected_net_profit
+                if calibration_min_expected_net_profit is not None
+                else self.settings.risk.calibration_min_expected_net_profit_usd
+            ),
+        )
         self.max_hold_candles = max(1, int(max_hold_candles))
         self.quality_filter_enabled = quality_filter_enabled
         self.quality_config = quality_config or BacktestQualityConfig()
@@ -854,7 +1021,10 @@ class HistoricalStrategyCalibrator:
             production_target_move_bps=self.settings.risk.min_target_move_bps,
             production_reward_cost_ratio=self.settings.risk.min_reward_to_cost_ratio,
             production_min_expected_net_profit=self.settings.risk.min_expected_net_profit_usd,
+            calibration_min_expected_net_profit=self.calibration_min_expected_net_profit,
             diagnostic_notional=self.diagnostic_notional,
+            signal_window_bars=self.signal_window_bars,
+            data_profiles=build_data_profiles(historical_by_symbol, self.timeframe),
             max_hold_candles=self.max_hold_candles,
             quality_filter_enabled=self.quality_filter_enabled,
             trailing_exits_enabled=self.trailing_exits_enabled,
@@ -900,7 +1070,8 @@ class HistoricalStrategyCalibrator:
 
         for index in range(strategy.min_bars, len(df)):
             stats.candles_tested += 1
-            window = df.iloc[: index + 1]
+            window_start = max(0, index + 1 - self.signal_window_bars)
+            window = df.iloc[window_start : index + 1]
             snapshot = MarketSnapshot(
                 symbol=symbol,
                 timestamp=self._finite_number(window["timestamp"].iloc[-1]),
@@ -924,32 +1095,32 @@ class HistoricalStrategyCalibrator:
                 continue
             stats.passing_core_filters += 1
 
-            production_gate = evaluate_thresholds(
+            calibration_gate = evaluate_thresholds(
                 target_move_bps=target_move_bps,
                 reward_cost_ratio=reward_cost_ratio,
                 expected_net_profit=expected_net_profit,
                 min_target_move_bps=self.settings.risk.min_target_move_bps,
                 min_reward_cost_ratio=self.settings.risk.min_reward_to_cost_ratio,
-                min_expected_net_profit=self.settings.risk.min_expected_net_profit_usd,
+                min_expected_net_profit=self.calibration_min_expected_net_profit,
             )
             validate_threshold_gate(
-                production_gate,
+                calibration_gate,
                 target_move_bps=target_move_bps,
                 reward_cost_ratio=reward_cost_ratio,
                 expected_net_profit=expected_net_profit,
                 min_target_move_bps=self.settings.risk.min_target_move_bps,
                 min_reward_cost_ratio=self.settings.risk.min_reward_to_cost_ratio,
-                min_expected_net_profit=self.settings.risk.min_expected_net_profit_usd,
-                label=f"{symbol}:{strategy.name}:production",
+                min_expected_net_profit=self.calibration_min_expected_net_profit,
+                label=f"{symbol}:{strategy.name}:calibration",
             )
-            if production_gate.target_pass:
+            if calibration_gate.target_pass:
                 stats.passing_target_move_bps += 1
-            if production_gate.reward_cost_pass:
+            if calibration_gate.reward_cost_pass:
                 stats.passing_reward_cost_ratio += 1
-            if production_gate.expected_net_pass:
+            if calibration_gate.expected_net_pass:
                 stats.passing_expected_net_profit += 1
             backtest_quality_passes = True
-            if production_gate.all_pass and self._is_simulatable_signal(signal):
+            if calibration_gate.all_pass and self._is_simulatable_signal(signal):
                 if self.quality_filter_enabled:
                     quality_decision = self.quality_filter.evaluate(strategy.name, window, signal)
                     if not quality_decision.approved:
@@ -1218,7 +1389,7 @@ class HistoricalStrategyCalibrator:
                 target_move_bps=target_move_bps,
                 reward_cost_ratio=reward_cost_ratio,
                 expected_net_profit=expected_net_profit,
-                min_expected_net_profit=self.settings.risk.min_expected_net_profit_usd,
+                min_expected_net_profit=self.calibration_min_expected_net_profit,
             )
 
     def _core_filters_pass(self, metadata: dict[str, Any]) -> bool:
@@ -1232,7 +1403,7 @@ class HistoricalStrategyCalibrator:
     def _default_diagnostic_notional(self) -> float:
         return max(
             self.settings.risk.min_position_notional,
-            self.settings.risk.initial_equity * self.settings.risk.max_position_notional_fraction,
+            self.settings.risk.diagnostic_notional,
         )
 
     def _build_strategies(self) -> list[BaseStrategy]:
@@ -1276,11 +1447,13 @@ class RealizedSweepOptimizer:
         max_hold_sweep: tuple[int, ...],
         atr_tp_sweep: tuple[float, ...],
         atr_stop_sweep: tuple[float, ...],
+        signal_window_bars: int = DEFAULT_SIGNAL_WINDOW_BARS,
         soft_rsi_high_long_sweep: tuple[float, ...] | None = None,
         soft_close_position_high_long_sweep: tuple[float, ...] | None = None,
         soft_rsi_low_short_sweep: tuple[float, ...] | None = None,
         soft_close_position_low_short_sweep: tuple[float, ...] | None = None,
         diagnostic_notional: float | None = None,
+        calibration_min_expected_net_profit: float | None = None,
         quality_filter_enabled: bool = True,
         trailing_exits_enabled: bool = False,
         breakeven_trigger_r: float = 1.0,
@@ -1294,7 +1467,9 @@ class RealizedSweepOptimizer:
         self.max_hold_sweep = max_hold_sweep
         self.atr_tp_sweep = atr_tp_sweep
         self.atr_stop_sweep = atr_stop_sweep
+        self.signal_window_bars = max(100, int(signal_window_bars))
         self.diagnostic_notional = diagnostic_notional
+        self.calibration_min_expected_net_profit = calibration_min_expected_net_profit
         self.quality_filter_enabled = quality_filter_enabled
         self.trailing_exits_enabled = trailing_exits_enabled
         self.breakeven_trigger_r = breakeven_trigger_r
@@ -1319,6 +1494,9 @@ class RealizedSweepOptimizer:
                 target_sweep=(config.min_target_move_bps,),
                 reward_cost_sweep=(config.min_reward_cost_ratio,),
                 diagnostic_notional=self.diagnostic_notional,
+                calibration_min_expected_net_profit=self.calibration_min_expected_net_profit,
+                timeframe=config.timeframe,
+                signal_window_bars=self.signal_window_bars,
                 max_hold_candles=config.max_hold_candles,
                 quality_filter_enabled=self.quality_filter_enabled,
                 trailing_exits_enabled=self.trailing_exits_enabled,
@@ -1343,11 +1521,19 @@ class RealizedSweepOptimizer:
             if self.diagnostic_notional is not None
             else HistoricalStrategyCalibrator(self.settings)._default_diagnostic_notional()
         )
+        calibration_min_expected_net_profit = (
+            self.calibration_min_expected_net_profit
+            if self.calibration_min_expected_net_profit is not None
+            else self.settings.risk.calibration_min_expected_net_profit_usd
+        )
         return RealizedOptimizationResult(
             production_target_move_bps=self.settings.risk.min_target_move_bps,
             production_reward_cost_ratio=self.settings.risk.min_reward_to_cost_ratio,
             production_min_expected_net_profit=self.settings.risk.min_expected_net_profit_usd,
+            calibration_min_expected_net_profit=calibration_min_expected_net_profit,
             diagnostic_notional=diagnostic_notional,
+            signal_window_bars=self.signal_window_bars,
+            data_profiles=build_data_profiles(historical_by_symbol, self.timeframe),
             quality_filter_enabled=self.quality_filter_enabled,
             trailing_exits_enabled=self.trailing_exits_enabled,
             quality_config=self.quality_config,
@@ -1357,6 +1543,8 @@ class RealizedSweepOptimizer:
             quality_rejected_simulations=quality_rejected_simulations,
             quality_rejected_losing_count=quality_rejected_losing_count,
             accepted_loser_clusters=build_accepted_loser_clusters(all_trades, self.quality_config),
+            momentum_entry_clusters=build_momentum_entry_clusters(all_trades),
+            momentum_entry_only_clusters=build_momentum_entry_only_clusters(all_trades),
         )
 
     def _configs(self) -> list[RealizedSweepConfig]:
@@ -1533,6 +1721,60 @@ def load_historical_inputs(
     return data
 
 
+def build_data_profiles(
+    historical_by_symbol: dict[str, pd.DataFrame],
+    timeframe: str,
+) -> list[dict[str, Any]]:
+    profiles: list[dict[str, Any]] = []
+    for symbol, df in sorted(historical_by_symbol.items()):
+        candles = int(len(df))
+        first_timestamp = timestamp_value(df["timestamp"].iloc[0]) if candles > 0 and "timestamp" in df.columns else None
+        last_timestamp = timestamp_value(df["timestamp"].iloc[-1]) if candles > 0 and "timestamp" in df.columns else None
+        profiles.append(
+            {
+                "symbol": symbol,
+                "timeframe": timeframe,
+                "candles": candles,
+                "first_timestamp": first_timestamp,
+                "last_timestamp": last_timestamp,
+                "start_utc": timestamp_to_utc(first_timestamp),
+                "end_utc": timestamp_to_utc(last_timestamp),
+                "approx_days": approximate_days(first_timestamp, last_timestamp),
+            }
+        )
+    return profiles
+
+
+def timestamp_value(value: Any) -> float | None:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    if pd.isna(number):
+        return None
+    return number
+
+
+def timestamp_to_utc(value: float | None) -> str:
+    if value is None:
+        return "n/a"
+    seconds = value / 1000 if abs(value) > 10_000_000_000 else value
+    try:
+        return datetime.fromtimestamp(seconds, tz=timezone.utc).isoformat()
+    except (OSError, OverflowError, ValueError):
+        return "n/a"
+
+
+def approximate_days(start: float | None, end: float | None) -> float | None:
+    if start is None or end is None:
+        return None
+    scale = 1000 if abs(start) > 10_000_000_000 or abs(end) > 10_000_000_000 else 1
+    days = (end - start) / scale / 86_400
+    if days < 0:
+        return None
+    return days
+
+
 def parse_csv_mappings(items: list[str]) -> dict[str, Path]:
     mappings: dict[str, Path] = {}
     for item in items:
@@ -1570,6 +1812,9 @@ def print_report(result: CalibrationResult) -> None:
     print("expected-only section estimates profit from candidate target and configured costs")
     print("realized simulation section walks future candle high/low paths after WouldTrade candidates")
     print("same-candle stop/target ambiguity is resolved conservatively as stop_loss_hit")
+    print("NetOK/WouldTrade use calibration_min_expected_net_profit; production min remains unchanged")
+    print(f"signal_window_bars={result.signal_window_bars}")
+    print_data_profiles(result.data_profiles)
     print(f"backtest_quality_filter={'enabled' if result.quality_filter_enabled else 'disabled'}")
     print(f"backtest_trailing_exits={'enabled' if result.trailing_exits_enabled else 'disabled'}")
     print_quality_config(result.quality_config)
@@ -1578,6 +1823,7 @@ def print_report(result: CalibrationResult) -> None:
         f"production_min_target_move_bps={result.production_target_move_bps:.2f} | "
         f"production_min_reward_cost_ratio={result.production_reward_cost_ratio:.2f}x | "
         f"production_min_expected_net_profit=${result.production_min_expected_net_profit:.2f} | "
+        f"calibration_min_expected_net_profit=${result.calibration_min_expected_net_profit:.2f} | "
         f"diagnostic_notional=${result.diagnostic_notional:,.2f}"
     )
     print()
@@ -1699,6 +1945,9 @@ def print_realized_optimization_report(result: RealizedOptimizationResult) -> No
     print("realized historical simulation")
     print("production thresholds unchanged")
     print("temporary sweep settings do not change main.py, settings/.env, or live/paper bot behavior")
+    print("NetOK/WouldTrade use calibration_min_expected_net_profit; production min remains unchanged")
+    print(f"signal_window_bars={result.signal_window_bars}")
+    print_data_profiles(result.data_profiles)
     print(f"backtest_quality_filter={'enabled' if result.quality_filter_enabled else 'disabled'}")
     print(f"backtest_trailing_exits={'enabled' if result.trailing_exits_enabled else 'disabled'}")
     print_quality_config(result.quality_config)
@@ -1706,6 +1955,7 @@ def print_realized_optimization_report(result: RealizedOptimizationResult) -> No
         f"production_min_target_move_bps={result.production_target_move_bps:.2f} | "
         f"production_min_reward_cost_ratio={result.production_reward_cost_ratio:.2f}x | "
         f"production_min_expected_net_profit=${result.production_min_expected_net_profit:.2f} | "
+        f"calibration_min_expected_net_profit=${result.calibration_min_expected_net_profit:.2f} | "
         f"diagnostic_notional=${result.diagnostic_notional:,.2f}"
     )
     print()
@@ -1746,6 +1996,8 @@ def print_realized_optimization_report(result: RealizedOptimizationResult) -> No
         "Accepted Loser Clusters (Global Across Evaluated Combinations)",
         repeated_combinations=True,
     )
+    print_momentum_entry_diagnostics(result.momentum_entry_clusters)
+    print_momentum_entry_only_diagnostics(result.momentum_entry_only_clusters)
     print_losing_setup_examples(result.losing_examples, result.quality_config)
     print_compact_realized_sweep_summary(result)
 
@@ -1792,11 +2044,44 @@ def format_profit_factor(value: float | None) -> str:
     return f"{value:.2f}"
 
 
+def print_data_profiles(profiles: list[dict[str, Any]]) -> None:
+    if not profiles:
+        print("data_profiles=n/a")
+        return
+    print("Data Profiles")
+    for profile in profiles:
+        approx_days = profile.get("approx_days")
+        approx_text = "n/a" if approx_days is None else f"{float(approx_days):.1f}"
+        print(
+            f"data_profile symbol={profile.get('symbol', 'n/a')} "
+            f"timeframe={profile.get('timeframe', 'n/a')} "
+            f"candles={profile.get('candles', 'n/a')} "
+            f"start={profile.get('start_utc', 'n/a')} "
+            f"end={profile.get('end_utc', 'n/a')} "
+            f"approx_days={approx_text}"
+        )
+    print()
+
+
 def print_compact_realized_sweep_summary(result: RealizedOptimizationResult) -> None:
     summary = build_compact_realized_sweep_summary(result)
 
     print()
     print("=== Compact Realized Sweep Summary ===")
+    print(f"diagnostic_notional=${summary['diagnostic_notional']:,.2f}")
+    print(f"signal_window_bars={summary['signal_window_bars']}")
+    print(f"production_min_target_move_bps={summary['production_min_target_move_bps']:.2f}")
+    print(f"production_min_reward_cost_ratio={summary['production_min_reward_cost_ratio']:.2f}")
+    print(f"production_min_expected_net_profit=${summary['production_min_expected_net_profit']:,.2f}")
+    print(f"calibration_min_expected_net_profit=${summary['calibration_min_expected_net_profit']:,.2f}")
+    print(f"symbols={','.join(summary['symbols']) if summary['symbols'] else 'n/a'}")
+    print(f"timeframes={','.join(summary['timeframes']) if summary['timeframes'] else 'n/a'}")
+    print(f"total_candles={summary['total_candles']}")
+    print(f"data_period_start={summary['data_period_start']}")
+    print(f"data_period_end={summary['data_period_end']}")
+    approx_days = summary.get("approx_days")
+    print(f"approx_days={approx_days:.1f}" if isinstance(approx_days, (int, float)) else "approx_days=n/a")
+    print(f"btc_only={summary['btc_only']}")
     print(f"reject_soft_late_momentum={summary['reject_soft_late_momentum']}")
     print(f"total_combinations={summary['total_combinations']}")
     print(f"positive_combinations={summary['positive_combinations']}")
@@ -1814,6 +2099,18 @@ def print_compact_realized_sweep_summary(result: RealizedOptimizationResult) -> 
         if count > 0:
             print(f"{key}={count}")
     print(f"top_accepted_loser_cluster={format_compact_cluster_summary(summary['top_accepted_loser_cluster'])}")
+    print(f"best_momentum_cluster={format_compact_momentum_cluster_summary(summary['best_momentum_cluster'])}")
+    print(f"worst_momentum_cluster={format_compact_momentum_cluster_summary(summary['worst_momentum_cluster'])}")
+    print(f"buy_momentum={format_compact_momentum_side_summary(summary['buy_momentum'])}")
+    print(f"sell_momentum={format_compact_momentum_side_summary(summary['sell_momentum'])}")
+    print(f"best_entry_momentum_cluster={format_compact_entry_momentum_cluster_summary(summary['best_entry_momentum_cluster'])}")
+    print(f"worst_entry_momentum_cluster={format_compact_entry_momentum_cluster_summary(summary['worst_entry_momentum_cluster'])}")
+    print(f"best_buy_entry_momentum_cluster={format_compact_entry_momentum_cluster_summary(summary['best_buy_entry_momentum_cluster'])}")
+    print(f"worst_buy_entry_momentum_cluster={format_compact_entry_momentum_cluster_summary(summary['worst_buy_entry_momentum_cluster'])}")
+    print(f"best_sell_entry_momentum_cluster={format_compact_entry_momentum_cluster_summary(summary['best_sell_entry_momentum_cluster'])}")
+    print(f"worst_sell_entry_momentum_cluster={format_compact_entry_momentum_cluster_summary(summary['worst_sell_entry_momentum_cluster'])}")
+    print(f"best_entry_momentum_cluster_at_least_20={format_compact_entry_momentum_cluster_summary(summary['best_entry_momentum_cluster_at_least_20'])}")
+    print(f"best_entry_momentum_cluster_at_least_30={format_compact_entry_momentum_cluster_summary(summary['best_entry_momentum_cluster_at_least_30'])}")
     print(f"verdict={summary['verdict']}")
     print("=== End Compact Realized Sweep Summary ===")
 
@@ -1821,6 +2118,7 @@ def print_compact_realized_sweep_summary(result: RealizedOptimizationResult) -> 
 def build_compact_realized_sweep_summary(result: RealizedOptimizationResult) -> dict[str, Any]:
     traded_rows = [row for row in result.rows if row.trades > 0]
     rows_at_least_30 = [row for row in traded_rows if row.trades >= 30]
+    data_summary = compact_data_summary(result.data_profiles)
     best_overall = max(
         traded_rows,
         key=lambda row: (row.net_pnl, row.average_net_per_trade),
@@ -1837,6 +2135,21 @@ def build_compact_realized_sweep_summary(result: RealizedOptimizationResult) -> 
         default=None,
     )
     return {
+        "summary_version": 2,
+        "diagnostic_notional": result.diagnostic_notional,
+        "signal_window_bars": result.signal_window_bars,
+        "production_min_target_move_bps": result.production_target_move_bps,
+        "production_min_reward_cost_ratio": result.production_reward_cost_ratio,
+        "production_min_expected_net_profit": result.production_min_expected_net_profit,
+        "calibration_min_expected_net_profit": result.calibration_min_expected_net_profit,
+        "data_profiles": result.data_profiles,
+        "symbols": data_summary["symbols"],
+        "timeframes": data_summary["timeframes"],
+        "total_candles": data_summary["total_candles"],
+        "data_period_start": data_summary["data_period_start"],
+        "data_period_end": data_summary["data_period_end"],
+        "approx_days": data_summary["approx_days"],
+        "btc_only": data_summary["btc_only"],
         "reject_soft_late_momentum": "enabled" if result.quality_config.reject_soft_late_momentum else "disabled",
         "total_combinations": len(result.rows),
         "positive_combinations": sum(1 for row in traded_rows if row.net_pnl > 0),
@@ -1853,7 +2166,53 @@ def build_compact_realized_sweep_summary(result: RealizedOptimizationResult) -> 
             "rejected_soft_late_short": result.quality_rejection_counts.get("rejected_soft_late_short", 0),
         },
         "top_accepted_loser_cluster": compact_accepted_loser_cluster_data(result.accepted_loser_clusters),
+        "best_momentum_cluster": compact_momentum_cluster_data(best_momentum_cluster(result.momentum_entry_clusters)),
+        "worst_momentum_cluster": compact_momentum_cluster_data(worst_momentum_cluster(result.momentum_entry_clusters)),
+        "buy_momentum": compact_momentum_side_summary(result.momentum_entry_clusters, "buy"),
+        "sell_momentum": compact_momentum_side_summary(result.momentum_entry_clusters, "sell"),
+        "best_entry_momentum_cluster": compact_entry_momentum_cluster_data(
+            best_entry_momentum_cluster(result.momentum_entry_only_clusters)
+        ),
+        "worst_entry_momentum_cluster": compact_entry_momentum_cluster_data(
+            worst_entry_momentum_cluster(result.momentum_entry_only_clusters)
+        ),
+        "best_buy_entry_momentum_cluster": compact_entry_momentum_cluster_data(
+            best_entry_momentum_cluster(result.momentum_entry_only_clusters, side="buy")
+        ),
+        "worst_buy_entry_momentum_cluster": compact_entry_momentum_cluster_data(
+            worst_entry_momentum_cluster(result.momentum_entry_only_clusters, side="buy")
+        ),
+        "best_sell_entry_momentum_cluster": compact_entry_momentum_cluster_data(
+            best_entry_momentum_cluster(result.momentum_entry_only_clusters, side="sell")
+        ),
+        "worst_sell_entry_momentum_cluster": compact_entry_momentum_cluster_data(
+            worst_entry_momentum_cluster(result.momentum_entry_only_clusters, side="sell")
+        ),
+        "best_entry_momentum_cluster_at_least_20": compact_entry_momentum_cluster_data(
+            best_entry_momentum_cluster(result.momentum_entry_only_clusters, min_trades=20)
+        ),
+        "best_entry_momentum_cluster_at_least_30": compact_entry_momentum_cluster_data(
+            best_entry_momentum_cluster(result.momentum_entry_only_clusters, min_trades=30)
+        ),
         "verdict": compact_realized_verdict(best_at_least_30),
+    }
+
+
+def compact_data_summary(profiles: list[dict[str, Any]]) -> dict[str, Any]:
+    symbols = sorted({str(profile.get("symbol", "")) for profile in profiles if profile.get("symbol")})
+    timeframes = sorted({str(profile.get("timeframe", "")) for profile in profiles if profile.get("timeframe")})
+    starts = [str(profile.get("start_utc")) for profile in profiles if profile.get("start_utc") not in {None, "n/a"}]
+    ends = [str(profile.get("end_utc")) for profile in profiles if profile.get("end_utc") not in {None, "n/a"}]
+    total_candles = sum(int(profile.get("candles") or 0) for profile in profiles)
+    day_values = [float(profile["approx_days"]) for profile in profiles if profile.get("approx_days") is not None]
+    return {
+        "symbols": symbols,
+        "timeframes": timeframes,
+        "total_candles": total_candles,
+        "data_period_start": min(starts) if starts else "n/a",
+        "data_period_end": max(ends) if ends else "n/a",
+        "approx_days": min(day_values) if day_values else None,
+        "btc_only": bool(symbols) and all(symbol == "BTC/USDT" for symbol in symbols),
     }
 
 
@@ -2157,6 +2516,367 @@ def print_accepted_loser_clusters(
         )
 
 
+def build_momentum_entry_clusters(
+    trades: list[SimulationTrade] | None,
+) -> list[MomentumEntryCluster]:
+    if not trades:
+        return []
+
+    clusters: dict[tuple[str, str, str, str, str, str, str, str], MomentumEntryCluster] = {}
+    for trade in trades:
+        if trade.strategy_name != "momentum":
+            continue
+        metadata = trade.metadata
+        key = (
+            trade.side.value,
+            rsi_band(metadata_float_or_none(metadata, "rsi")),
+            macd_strength_band(metadata_float_or_none(metadata, "macd_hist_bps")),
+            trend_regime_band(
+                metadata_float_or_none(metadata, "trend_slope_bps"),
+                metadata_float_or_none(metadata, "ema_gap_bps"),
+            ),
+            volume_ratio_band(metadata_float_or_none(metadata, "volume_ratio")),
+            atr_bps_band(metadata_float_or_none(metadata, "atr_bps")),
+            close_position_band(metadata_float_or_none(metadata, "close_position")),
+            trade.exit_reason,
+        )
+        cluster = clusters.get(key)
+        if cluster is None:
+            cluster = MomentumEntryCluster(
+                side=key[0],
+                rsi_band=key[1],
+                macd_band=key[2],
+                trend_regime=key[3],
+                volume_band=key[4],
+                atr_bps_band=key[5],
+                close_position_band=key[6],
+                exit_reason=key[7],
+            )
+            clusters[key] = cluster
+        cluster.record(trade)
+    return sorted(
+        clusters.values(),
+        key=lambda cluster: (cluster.net_pnl, cluster.count),
+        reverse=True,
+    )
+
+
+def print_momentum_entry_diagnostics(clusters: list[MomentumEntryCluster]) -> None:
+    print()
+    print("Momentum Entry Diagnostics (Accepted Trades, Global Across Evaluated Combinations)")
+    print("note=clusters may include repeated historical setups across sweep parameter combinations")
+    if not clusters:
+        print("none")
+        return
+    print_momentum_side_summary(clusters)
+    print()
+    print_momentum_cluster_table(
+        "Best Momentum Entry Clusters By Net PnL",
+        sorted(clusters, key=lambda cluster: (cluster.net_pnl, cluster.average_net_per_trade), reverse=True)[:10],
+    )
+    print()
+    print_momentum_cluster_table(
+        "Worst Momentum Entry Clusters By Net PnL",
+        sorted(clusters, key=lambda cluster: (cluster.net_pnl, cluster.average_net_per_trade))[:10],
+    )
+
+
+def print_momentum_side_summary(clusters: list[MomentumEntryCluster]) -> None:
+    print(f"{'Side':<5} {'Trades':>7} {'Wins':>6} {'Loss':>6} {'Win%':>7} {'Net':>11} {'AvgNet':>11} {'PF':>7}")
+    for side in ("buy", "sell"):
+        summary = compact_momentum_side_summary(clusters, side)
+        print(
+            f"{side:<5} {summary['trades']:>7} {summary['wins']:>6} {summary['losses']:>6} "
+            f"{summary['win_rate']:>6.1f}% ${summary['net']:>10.2f} "
+            f"${summary['avg_net']:>10.2f} {format_profit_factor(summary['pf']):>7}"
+        )
+
+
+def print_momentum_cluster_table(title: str, clusters: list[MomentumEntryCluster]) -> None:
+    print(title)
+    if not clusters:
+        print("none")
+        return
+    print(
+        f"{'Side':<5} {'RSI':<8} {'MACD':<14} {'Trend':<18} {'Volume':<10} "
+        f"{'ATRbps':<10} {'ClosePos':<11} {'Exit':<18} {'Trades':>7} "
+        f"{'Net':>11} {'AvgNet':>11} {'PF':>7} {'Win%':>7} {'AvgHold':>8}"
+    )
+    for cluster in clusters:
+        print(
+            f"{cluster.side:<5} {cluster.rsi_band:<8} {cluster.macd_band:<14} "
+            f"{cluster.trend_regime:<18} {cluster.volume_band:<10} "
+            f"{cluster.atr_bps_band:<10} {cluster.close_position_band:<11} "
+            f"{cluster.exit_reason:<18} {cluster.count:>7} ${cluster.net_pnl:>10.2f} "
+            f"${cluster.average_net_per_trade:>10.2f} {format_profit_factor(cluster.profit_factor):>7} "
+            f"{cluster.win_rate:>6.1f}% {cluster.average_hold:>8.1f}"
+        )
+
+
+def best_momentum_cluster(clusters: list[MomentumEntryCluster]) -> MomentumEntryCluster | None:
+    if not clusters:
+        return None
+    return max(clusters, key=lambda cluster: (cluster.net_pnl, cluster.average_net_per_trade))
+
+
+def worst_momentum_cluster(clusters: list[MomentumEntryCluster]) -> MomentumEntryCluster | None:
+    if not clusters:
+        return None
+    return min(clusters, key=lambda cluster: (cluster.net_pnl, cluster.average_net_per_trade))
+
+
+def compact_momentum_cluster_data(cluster: MomentumEntryCluster | None) -> dict[str, Any] | None:
+    if cluster is None:
+        return None
+    return {
+        "side": cluster.side,
+        "rsi_band": cluster.rsi_band,
+        "macd_band": cluster.macd_band,
+        "trend_regime": cluster.trend_regime,
+        "volume_band": cluster.volume_band,
+        "atr_bps_band": cluster.atr_bps_band,
+        "close_position_band": cluster.close_position_band,
+        "exit_reason": cluster.exit_reason,
+        "trades": cluster.count,
+        "wins": cluster.wins,
+        "losses": cluster.losses,
+        "win_rate": cluster.win_rate,
+        "net": cluster.net_pnl,
+        "avg_net": cluster.average_net_per_trade,
+        "pf": cluster.profit_factor,
+        "avg_hold": cluster.average_hold,
+    }
+
+
+def compact_momentum_side_summary(
+    clusters: list[MomentumEntryCluster],
+    side: str,
+) -> dict[str, Any]:
+    selected = [cluster for cluster in clusters if cluster.side == side]
+    trades = sum(cluster.count for cluster in selected)
+    wins = sum(cluster.wins for cluster in selected)
+    losses = sum(cluster.losses for cluster in selected)
+    net = sum(cluster.net_pnl for cluster in selected)
+    gross_profit = sum(cluster.gross_profit for cluster in selected)
+    gross_loss = sum(cluster.gross_loss for cluster in selected)
+    if trades <= 0:
+        profit_factor = None
+        win_rate = 0.0
+        avg_net = 0.0
+    else:
+        profit_factor = None if gross_loss <= 0 and gross_profit <= 0 else (float("inf") if gross_loss <= 0 else gross_profit / gross_loss)
+        win_rate = wins / trades * 100
+        avg_net = net / trades
+    return {
+        "side": side,
+        "trades": trades,
+        "wins": wins,
+        "losses": losses,
+        "win_rate": win_rate,
+        "net": net,
+        "avg_net": avg_net,
+        "pf": profit_factor,
+    }
+
+
+def format_compact_momentum_cluster_summary(cluster: dict[str, Any] | None) -> str:
+    if cluster is None:
+        return "n/a"
+    return (
+        f"{cluster['side']} rsi={cluster['rsi_band']} macd={cluster['macd_band']} "
+        f"trend={cluster['trend_regime']} volume={cluster['volume_band']} "
+        f"atr={cluster['atr_bps_band']} close_position={cluster['close_position_band']} "
+        f"exit={cluster['exit_reason']} trades={cluster['trades']} "
+        f"net=${cluster['net']:.2f} avg_net=${cluster['avg_net']:.2f} "
+        f"pf={format_profit_factor(cluster['pf'])}"
+    )
+
+
+def format_compact_momentum_side_summary(summary: dict[str, Any]) -> str:
+    return (
+        f"trades={summary['trades']} net=${summary['net']:.2f} "
+        f"avg_net=${summary['avg_net']:.2f} pf={format_profit_factor(summary['pf'])}"
+    )
+
+
+def build_momentum_entry_only_clusters(
+    trades: list[SimulationTrade] | None,
+) -> list[MomentumEntryOnlyCluster]:
+    if not trades:
+        return []
+
+    clusters: dict[tuple[str, str, str, str, str, str, str], MomentumEntryOnlyCluster] = {}
+    for trade in trades:
+        if trade.strategy_name != "momentum":
+            continue
+        metadata = trade.metadata
+        key = (
+            trade.side.value,
+            rsi_band(metadata_float_or_none(metadata, "rsi")),
+            macd_strength_band(metadata_float_or_none(metadata, "macd_hist_bps")),
+            trend_regime_band(
+                metadata_float_or_none(metadata, "trend_slope_bps"),
+                metadata_float_or_none(metadata, "ema_gap_bps"),
+            ),
+            volume_ratio_band(metadata_float_or_none(metadata, "volume_ratio")),
+            atr_bps_band(metadata_float_or_none(metadata, "atr_bps")),
+            close_position_band(metadata_float_or_none(metadata, "close_position")),
+        )
+        cluster = clusters.get(key)
+        if cluster is None:
+            cluster = MomentumEntryOnlyCluster(
+                side=key[0],
+                rsi_band=key[1],
+                macd_band=key[2],
+                trend_regime=key[3],
+                volume_band=key[4],
+                atr_bps_band=key[5],
+                close_position_band=key[6],
+            )
+            clusters[key] = cluster
+        cluster.record(trade)
+    return sorted(
+        clusters.values(),
+        key=lambda cluster: (cluster.net_pnl, cluster.count),
+        reverse=True,
+    )
+
+
+def print_momentum_entry_only_diagnostics(clusters: list[MomentumEntryOnlyCluster]) -> None:
+    print()
+    print("Momentum Entry-Only Diagnostics (Accepted Trades, Global Across Evaluated Combinations)")
+    print("note=cluster keys use entry-time features only; outcome columns are realized after entry")
+    print("note=clusters may include repeated historical setups across sweep parameter combinations")
+    if not clusters:
+        print("none")
+        return
+    print_entry_momentum_cluster_table(
+        "Best Entry-Only Momentum Clusters By Net PnL",
+        sorted(clusters, key=lambda cluster: (cluster.net_pnl, cluster.average_net_per_trade), reverse=True)[:10],
+    )
+    print()
+    print_entry_momentum_cluster_table(
+        "Best Entry-Only Momentum Clusters With At Least 20 Trades",
+        sorted(
+            [cluster for cluster in clusters if cluster.count >= 20],
+            key=lambda cluster: (cluster.net_pnl, cluster.average_net_per_trade),
+            reverse=True,
+        )[:10],
+    )
+    print()
+    print_entry_momentum_cluster_table(
+        "Best Entry-Only Momentum Clusters With At Least 30 Trades",
+        sorted(
+            [cluster for cluster in clusters if cluster.count >= 30],
+            key=lambda cluster: (cluster.net_pnl, cluster.average_net_per_trade),
+            reverse=True,
+        )[:10],
+    )
+    print()
+    print_entry_momentum_cluster_table(
+        "Worst Entry-Only Momentum Clusters By Net PnL",
+        sorted(clusters, key=lambda cluster: (cluster.net_pnl, cluster.average_net_per_trade))[:10],
+    )
+
+
+def print_entry_momentum_cluster_table(
+    title: str,
+    clusters: list[MomentumEntryOnlyCluster],
+) -> None:
+    print(title)
+    if not clusters:
+        print("none")
+        return
+    print(
+        f"{'Side':<5} {'RSI':<8} {'MACD':<14} {'Trend':<18} {'Volume':<10} "
+        f"{'ATRbps':<10} {'ClosePos':<11} {'Trades':>7} {'Wins':>6} {'Loss':>6} "
+        f"{'Win%':>7} {'Net':>11} {'AvgNet':>11} {'PF':>7} {'Stop':>6} "
+        f"{'TP':>6} {'Horizon':>8} {'AvgHold':>8}"
+    )
+    for cluster in clusters:
+        print(
+            f"{cluster.side:<5} {cluster.rsi_band:<8} {cluster.macd_band:<14} "
+            f"{cluster.trend_regime:<18} {cluster.volume_band:<10} "
+            f"{cluster.atr_bps_band:<10} {cluster.close_position_band:<11} "
+            f"{cluster.count:>7} {cluster.wins:>6} {cluster.losses:>6} "
+            f"{cluster.win_rate:>6.1f}% ${cluster.net_pnl:>10.2f} "
+            f"${cluster.average_net_per_trade:>10.2f} {format_profit_factor(cluster.profit_factor):>7} "
+            f"{cluster.stop_loss_hit_count:>6} {cluster.take_profit_hit_count:>6} "
+            f"{cluster.max_horizon_exit_count:>8} {cluster.average_hold:>8.1f}"
+        )
+
+
+def best_entry_momentum_cluster(
+    clusters: list[MomentumEntryOnlyCluster],
+    side: str | None = None,
+    min_trades: int = 1,
+) -> MomentumEntryOnlyCluster | None:
+    selected = [
+        cluster
+        for cluster in clusters
+        if cluster.count >= min_trades and (side is None or cluster.side == side)
+    ]
+    if not selected:
+        return None
+    return max(selected, key=lambda cluster: (cluster.net_pnl, cluster.average_net_per_trade))
+
+
+def worst_entry_momentum_cluster(
+    clusters: list[MomentumEntryOnlyCluster],
+    side: str | None = None,
+    min_trades: int = 1,
+) -> MomentumEntryOnlyCluster | None:
+    selected = [
+        cluster
+        for cluster in clusters
+        if cluster.count >= min_trades and (side is None or cluster.side == side)
+    ]
+    if not selected:
+        return None
+    return min(selected, key=lambda cluster: (cluster.net_pnl, cluster.average_net_per_trade))
+
+
+def compact_entry_momentum_cluster_data(
+    cluster: MomentumEntryOnlyCluster | None,
+) -> dict[str, Any] | None:
+    if cluster is None:
+        return None
+    return {
+        "side": cluster.side,
+        "rsi_band": cluster.rsi_band,
+        "macd_band": cluster.macd_band,
+        "trend_regime": cluster.trend_regime,
+        "volume_band": cluster.volume_band,
+        "atr_bps_band": cluster.atr_bps_band,
+        "close_position_band": cluster.close_position_band,
+        "trades": cluster.count,
+        "wins": cluster.wins,
+        "losses": cluster.losses,
+        "win_rate": cluster.win_rate,
+        "net": cluster.net_pnl,
+        "avg_net": cluster.average_net_per_trade,
+        "pf": cluster.profit_factor,
+        "stop_loss_hit_count": cluster.stop_loss_hit_count,
+        "take_profit_hit_count": cluster.take_profit_hit_count,
+        "max_horizon_exit_count": cluster.max_horizon_exit_count,
+        "avg_hold": cluster.average_hold,
+    }
+
+
+def format_compact_entry_momentum_cluster_summary(cluster: dict[str, Any] | None) -> str:
+    if cluster is None:
+        return "n/a"
+    return (
+        f"{cluster['side']} rsi={cluster['rsi_band']} macd={cluster['macd_band']} "
+        f"trend={cluster['trend_regime']} volume={cluster['volume_band']} "
+        f"atr={cluster['atr_bps_band']} close_position={cluster['close_position_band']} "
+        f"trades={cluster['trades']} net=${cluster['net']:.2f} "
+        f"avg_net=${cluster['avg_net']:.2f} pf={format_profit_factor(cluster['pf'])} "
+        f"stop={cluster['stop_loss_hit_count']} tp={cluster['take_profit_hit_count']} "
+        f"horizon={cluster['max_horizon_exit_count']} avg_hold={cluster['avg_hold']:.1f}"
+    )
+
+
 def rsi_band(value: float | None) -> str:
     if value is None:
         return "n/a"
@@ -2195,6 +2915,70 @@ def close_position_band(value: float | None) -> str:
     if value <= 0.90:
         return "0.75-0.90"
     return ">0.90"
+
+
+def macd_strength_band(value: float | None) -> str:
+    if value is None:
+        return "n/a"
+    if value <= -5:
+        return "neg_strong"
+    if value <= -1:
+        return "neg_medium"
+    if value < 0:
+        return "neg_weak"
+    if value == 0:
+        return "zero"
+    if value < 1:
+        return "pos_weak"
+    if value < 5:
+        return "pos_medium"
+    return "pos_strong"
+
+
+def trend_regime_band(trend_slope_bps: float | None, ema_gap_bps: float | None) -> str:
+    if trend_slope_bps is None:
+        return "n/a"
+    if trend_slope_bps < 0:
+        return "countertrend"
+    if trend_slope_bps < 18:
+        return "weak_or_flat"
+    if ema_gap_bps is not None and ema_gap_bps < 8:
+        return "low_ema_gap"
+    if trend_slope_bps >= 55 or (ema_gap_bps is not None and ema_gap_bps >= 28):
+        return "strong_extended"
+    return "clear_aligned"
+
+
+def volume_ratio_band(value: float | None) -> str:
+    if value is None:
+        return "n/a"
+    if value < 0.80:
+        return "<0.80"
+    if value < 1.00:
+        return "0.80-1.00"
+    if value < 1.12:
+        return "1.00-1.12"
+    if value < 1.50:
+        return "1.12-1.50"
+    if value < 2.00:
+        return "1.50-2.00"
+    return ">2.00"
+
+
+def atr_bps_band(value: float | None) -> str:
+    if value is None:
+        return "n/a"
+    if value < 10:
+        return "<10"
+    if value < 25:
+        return "10-25"
+    if value < 50:
+        return "25-50"
+    if value < 75:
+        return "50-75"
+    if value < 100:
+        return "75-100"
+    return ">100"
 
 
 def hold_band(hold_candles: int) -> str:
@@ -2362,6 +3146,25 @@ def parse_int_list(raw: str) -> tuple[int, ...]:
     return tuple(int(item.strip()) for item in raw.split(",") if item.strip())
 
 
+def normalize_timeframe(raw: str) -> str:
+    timeframe = TIMEFRAME_ALIASES.get(raw.strip(), raw.strip())
+    if timeframe not in ALLOWED_BACKTEST_TIMEFRAMES:
+        valid = ", ".join(ALLOWED_BACKTEST_TIMEFRAMES)
+        raise argparse.ArgumentTypeError(
+            f"unsupported calibration timeframe {raw!r}; allowed: {valid}"
+        )
+    return timeframe
+
+
+def calibration_limit_for_years(timeframe: str, years: float) -> int:
+    timeframe = normalize_timeframe(timeframe)
+    minutes = TIMEFRAME_MINUTES.get(timeframe)
+    if minutes is None:
+        valid = ", ".join(ALLOWED_BACKTEST_TIMEFRAMES)
+        raise ValueError(f"unsupported calibration timeframe {timeframe!r}; allowed: {valid}")
+    return max(1, int(years * 365 * 24 * 60 / minutes))
+
+
 def calibration_env_float(name: str, default: float) -> float:
     raw = os.getenv(name)
     return default if raw is None or raw == "" else float(raw)
@@ -2452,8 +3255,10 @@ def build_arg_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--timeframe",
-        default=loaded_settings.trading.timeframe,
-        help="Timeframe label used for CSV discovery and reporting, e.g. 1m, 5m, 15m.",
+        type=normalize_timeframe,
+        default=normalize_timeframe(loaded_settings.trading.timeframe),
+        choices=ALLOWED_BACKTEST_TIMEFRAMES,
+        help="Timeframe label used for CSV discovery and reporting. Allowed: 1m, 5m, 15m.",
     )
     parser.add_argument(
         "--csv",
@@ -2469,7 +3274,13 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--limit",
         type=int,
-        help="Optional number of most recent candles to use from each CSV.",
+        help="Optional number of most recent candles to use from each CSV. Overrides --years.",
+    )
+    parser.add_argument(
+        "--years",
+        type=float,
+        default=DEFAULT_BACKTEST_YEARS,
+        help="Backtesting lookback used to derive --limit when --limit is omitted. Default: 3 years.",
     )
     parser.add_argument(
         "--target-sweep",
@@ -2490,13 +3301,31 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--diagnostic-notional",
         type=float,
-        help="Optional notional used only for calibration expected net profit.",
+        help="Optional notional used only for calibration expected net profit. Default comes from DIAGNOSTIC_NOTIONAL, currently $100 unless configured.",
+    )
+    parser.add_argument(
+        "--calibration-min-expected-net-profit",
+        type=float,
+        help=(
+            "Calibration/backtest-only expected net profit gate in USD. "
+            "Default comes from CALIBRATION_MIN_EXPECTED_NET_PROFIT_USD, "
+            "or 25bps of DIAGNOSTIC_NOTIONAL."
+        ),
     )
     parser.add_argument(
         "--max-hold-candles",
         type=int,
         default=60,
         help="Maximum future candles used for calibration exit simulation.",
+    )
+    parser.add_argument(
+        "--signal-window-bars",
+        type=int,
+        default=DEFAULT_SIGNAL_WINDOW_BARS,
+        help=(
+            "Calibration/backtest-only recent candle window passed to strategy signal generation. "
+            "Keeps long-history runs tractable and does not change live/paper execution."
+        ),
     )
     parser.add_argument(
         "--realized-sweep",
@@ -2700,6 +3529,30 @@ def main() -> None:
         run_internal_self_test()
         print("calibration threshold self-test passed")
         return
+    if args.years <= 0:
+        raise SystemExit("--years must be greater than 0")
+    effective_limit = (
+        args.limit
+        if args.limit is not None
+        else calibration_limit_for_years(args.timeframe, args.years)
+    )
+    print("Backtest data selection")
+    print("calibration only")
+    print(
+        f"timeframe={args.timeframe} years={args.years:g} "
+        f"candle_limit={effective_limit if effective_limit and effective_limit > 0 else 'unlimited'}"
+    )
+    if args.limit is not None:
+        print("note=--limit overrides --years; omit --limit to use the full configured lookback")
+    if args.timeframe == "1m" and (effective_limit is None or effective_limit >= calibration_limit_for_years("1m", DEFAULT_BACKTEST_YEARS)):
+        print("warning=1m 3-year data is large and slow; test 15m first, then 5m, then 1m")
+    calibration_min_expected_net_profit = (
+        args.calibration_min_expected_net_profit
+        if args.calibration_min_expected_net_profit is not None
+        else settings.risk.calibration_min_expected_net_profit_usd
+    )
+    if calibration_min_expected_net_profit < 0:
+        raise SystemExit("--calibration-min-expected-net-profit must be greater than or equal to 0")
     target_sweep = parse_float_list(
         args.target_sweep
         or format_float_list(
@@ -2757,7 +3610,7 @@ def main() -> None:
         csv_mappings=args.csv,
         data_dir=args.data_dir,
         timeframe=args.timeframe,
-        limit=args.limit,
+        limit=effective_limit,
     )
     if args.realized_sweep:
         optimizer = RealizedSweepOptimizer(
@@ -2772,7 +3625,9 @@ def main() -> None:
             soft_close_position_high_long_sweep=soft_close_position_high_long_sweep,
             soft_rsi_low_short_sweep=soft_rsi_low_short_sweep,
             soft_close_position_low_short_sweep=soft_close_position_low_short_sweep,
+            signal_window_bars=args.signal_window_bars,
             diagnostic_notional=args.diagnostic_notional,
+            calibration_min_expected_net_profit=calibration_min_expected_net_profit,
             quality_filter_enabled=quality_filter_enabled,
             trailing_exits_enabled=args.backtest_trailing_exits,
             breakeven_trigger_r=args.breakeven_trigger_r,
@@ -2786,9 +3641,12 @@ def main() -> None:
         return
     calibrator = HistoricalStrategyCalibrator(
         settings=settings,
+        timeframe=args.timeframe,
+        signal_window_bars=args.signal_window_bars,
         target_sweep=target_sweep,
         reward_cost_sweep=reward_cost_sweep,
         diagnostic_notional=args.diagnostic_notional,
+        calibration_min_expected_net_profit=calibration_min_expected_net_profit,
         max_hold_candles=args.max_hold_candles,
         quality_filter_enabled=quality_filter_enabled,
         trailing_exits_enabled=args.backtest_trailing_exits,

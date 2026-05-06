@@ -9,6 +9,11 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 
+DEFAULT_LIVE_INITIAL_EQUITY = 10_000.0
+DEFAULT_PAPER_INITIAL_EQUITY = 100.0
+DEFAULT_DIAGNOSTIC_NOTIONAL = 100.0
+DEFAULT_CALIBRATION_MIN_EXPECTED_NET_PROFIT_BPS = 25.0
+
 try:
     from dotenv import load_dotenv
 except ImportError:  # pragma: no cover - dependency is in requirements.
@@ -78,7 +83,8 @@ class TradingSettings:
     paper_trade: bool = True
     enable_live_trading: bool = False
     enable_scalping_microstructure: bool = False
-    symbols: tuple[str, ...] = ("BTC/USDT", "ETH/USDT")
+    paper_initial_equity: float = DEFAULT_PAPER_INITIAL_EQUITY
+    symbols: tuple[str, ...] = ("BTC/USDT",)
     timeframe: str = "1m"
     ohlcv_limit: int = 200
     confidence_threshold: float = 0.8
@@ -103,7 +109,8 @@ class MarketDataSettings:
 
 @dataclass(frozen=True)
 class RiskSettings:
-    initial_equity: float = 10_000.0
+    initial_equity: float = DEFAULT_LIVE_INITIAL_EQUITY
+    diagnostic_notional: float = DEFAULT_DIAGNOSTIC_NOTIONAL
     max_risk_per_trade: float = 0.01
     max_daily_loss: float = 0.03
     max_drawdown: float = 0.08
@@ -114,6 +121,9 @@ class RiskSettings:
     min_reward_cost_multiple: float = 3.0
     min_expected_net_profit_usd: float = 1.0
     min_expected_net_profit: float = 1.0
+    calibration_min_expected_net_profit_usd: float = (
+        DEFAULT_DIAGNOSTIC_NOTIONAL * DEFAULT_CALIBRATION_MIN_EXPECTED_NET_PROFIT_BPS / 10_000
+    )
     min_target_move_bps: float = 75.0
     atr_take_profit_multiplier: float = 3.0
     atr_stop_loss_multiplier: float = 1.0
@@ -180,6 +190,11 @@ def load_settings() -> Settings:
     """Load all settings from environment variables and optional .env."""
 
     _load_env_file()
+    paper_trade = _env_bool("PAPER_TRADE", True)
+    paper_initial_equity = _env_float("PAPER_INITIAL_EQUITY", DEFAULT_PAPER_INITIAL_EQUITY)
+    live_initial_equity = _env_float("INITIAL_EQUITY", DEFAULT_LIVE_INITIAL_EQUITY)
+    effective_initial_equity = paper_initial_equity if paper_trade else live_initial_equity
+    diagnostic_notional = _env_float("DIAGNOSTIC_NOTIONAL", DEFAULT_DIAGNOSTIC_NOTIONAL)
     maker_fee_rate = _env_fee_rate("MAKER_FEE_RATE", "FEE_BPS", 0.001)
     taker_fee_rate = _env_fee_rate("TAKER_FEE_RATE", "FEE_BPS", 0.001)
     min_reward_to_cost_ratio = _env_float(
@@ -189,6 +204,13 @@ def load_settings() -> Settings:
     min_expected_net_profit_usd = _env_float(
         "MIN_EXPECTED_NET_PROFIT_USD",
         _env_float("MIN_EXPECTED_NET_PROFIT", 1.0),
+    )
+    calibration_min_expected_net_profit_usd = max(
+        0.0,
+        _env_float(
+            "CALIBRATION_MIN_EXPECTED_NET_PROFIT_USD",
+            diagnostic_notional * DEFAULT_CALIBRATION_MIN_EXPECTED_NET_PROFIT_BPS / 10_000,
+        ),
     )
     return Settings(
         app=AppSettings(
@@ -207,10 +229,11 @@ def load_settings() -> Settings:
             sandbox=_env_bool("EXCHANGE_SANDBOX", True),
         ),
         trading=TradingSettings(
-            paper_trade=_env_bool("PAPER_TRADE", True),
+            paper_trade=paper_trade,
             enable_live_trading=_env_bool("ENABLE_LIVE_TRADING", False),
             enable_scalping_microstructure=_env_bool("ENABLE_SCALPING_MICROSTRUCTURE", False),
-            symbols=_env_tuple("SYMBOLS", ("BTC/USDT", "ETH/USDT")),
+            paper_initial_equity=paper_initial_equity,
+            symbols=_env_tuple("SYMBOLS", ("BTC/USDT",)),
             timeframe=os.getenv("TIMEFRAME", "1m"),
             ohlcv_limit=_env_int("OHLCV_LIMIT", 200),
             confidence_threshold=_env_float("CONFIDENCE_THRESHOLD", 0.8),
@@ -231,7 +254,8 @@ def load_settings() -> Settings:
             synthetic_data_on_error=_env_bool("SYNTHETIC_DATA_ON_ERROR", True),
         ),
         risk=RiskSettings(
-            initial_equity=_env_float("INITIAL_EQUITY", 10_000.0),
+            initial_equity=effective_initial_equity,
+            diagnostic_notional=diagnostic_notional,
             max_risk_per_trade=_env_float("MAX_RISK_PER_TRADE", 0.01),
             max_daily_loss=_env_float("MAX_DAILY_LOSS", 0.03),
             max_drawdown=_env_float("MAX_DRAWDOWN", 0.08),
@@ -242,6 +266,7 @@ def load_settings() -> Settings:
             min_reward_cost_multiple=min_reward_to_cost_ratio,
             min_expected_net_profit_usd=min_expected_net_profit_usd,
             min_expected_net_profit=min_expected_net_profit_usd,
+            calibration_min_expected_net_profit_usd=calibration_min_expected_net_profit_usd,
             min_target_move_bps=_env_float("MIN_TARGET_MOVE_BPS", 75.0),
             atr_take_profit_multiplier=_env_float("ATR_TAKE_PROFIT_MULTIPLIER", 3.0),
             atr_stop_loss_multiplier=_env_float("ATR_STOP_LOSS_MULTIPLIER", 1.0),
