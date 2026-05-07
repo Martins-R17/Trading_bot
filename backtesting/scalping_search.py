@@ -34,8 +34,12 @@ TIMEFRAME_MINUTES = {"1m": 1, "5m": 5, "15m": 15}
 DEFAULT_FUTURES_MAKER_FEE_RATE = 0.0002
 DEFAULT_FUTURES_TAKER_FEE_RATE = 0.0005
 DEFAULT_SLIPPAGE_BPS = 2.0
+DEFAULT_BASE_SPREAD_BPS = 0.8
+DEFAULT_LATENCY_MIN_MS = 100
+DEFAULT_LATENCY_MAX_MS = 500
+DEFAULT_MONTE_CARLO_ITERATIONS = 250
 DEFAULT_MAINTENANCE_MARGIN_RATE = 0.004
-DEFAULT_MAX_HOLD_MINUTES = 30
+DEFAULT_MAX_HOLD_MINUTES = 60
 DEFAULT_RISK_PER_TRADE_PCT = 1.0
 MAX_SIMULATED_LEVERAGE = 10.0
 TARGET_TRADES_PER_DAY = 100.0
@@ -90,6 +94,7 @@ class SearchTrade:
     gross_pnl: float
     fees: float
     slippage_costs: float
+    spread_costs: float
     total_costs: float
     net_pnl: float
     position_notional: float
@@ -97,6 +102,10 @@ class SearchTrade:
     stop_bps: float
     market_regime: str = "unknown"
     trading_session: str = "unknown"
+    execution_latency_ms: float = 0.0
+    effective_spread_bps: float = 0.0
+    effective_slippage_bps: float = 0.0
+    partial_fill_ratio: float = 1.0
     liquidation_event: bool = False
 
 
@@ -138,6 +147,14 @@ class SearchRow:
     days_above_5pct_pct: float = 0.0
     max_daily_drawdown_pct: float = 0.0
     fee_drag_pct: float = 0.0
+    spread_cost_pct: float = 0.0
+    slippage_cost_pct: float = 0.0
+    total_execution_drag_pct: float = 0.0
+    execution_latency_ms_avg: float = 0.0
+    execution_latency_ms_p95: float = 0.0
+    missed_fills: int = 0
+    missed_fill_rate: float = 0.0
+    partial_fill_rate: float = 0.0
     liquidation_events: int = 0
     liquidation_risk_flag: bool = False
     leverage_used: float = 1.0
@@ -150,6 +167,8 @@ class SearchRow:
     session_performance: list[dict[str, Any]] = field(default_factory=list)
     best_regime: dict[str, Any] | None = None
     best_session: dict[str, Any] | None = None
+    monte_carlo: dict[str, Any] = field(default_factory=dict)
+    edge_confidence: str = "LOW"
 
 
 @dataclass
@@ -206,6 +225,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--futures-maker-fee-rate", type=float, default=DEFAULT_FUTURES_MAKER_FEE_RATE)
     parser.add_argument("--futures-taker-fee-rate", type=float, default=DEFAULT_FUTURES_TAKER_FEE_RATE)
     parser.add_argument("--slippage-bps", type=float, default=DEFAULT_SLIPPAGE_BPS)
+    parser.add_argument("--base-spread-bps", type=float, default=DEFAULT_BASE_SPREAD_BPS)
+    parser.add_argument("--latency-min-ms", type=int, default=DEFAULT_LATENCY_MIN_MS)
+    parser.add_argument("--latency-max-ms", type=int, default=DEFAULT_LATENCY_MAX_MS)
+    parser.add_argument("--monte-carlo-iterations", type=int, default=DEFAULT_MONTE_CARLO_ITERATIONS)
     parser.add_argument("--maintenance-margin-rate", type=float, default=DEFAULT_MAINTENANCE_MARGIN_RATE)
     parser.add_argument("--max-parameter-sets", type=int, default=0, help="0 means all default internal-agent specs.")
     parser.add_argument("--enable-macro-news-filter", action="store_true", default=env_bool("ENABLE_MACRO_NEWS_FILTER", False))
@@ -233,6 +256,14 @@ def main() -> None:
         raise SystemExit(f"--simulated-leverage must be <= {MAX_SIMULATED_LEVERAGE:.0f} for simulation safety")
     if args.max_hold_minutes > DEFAULT_MAX_HOLD_MINUTES:
         raise SystemExit(f"--max-hold-minutes must be <= {DEFAULT_MAX_HOLD_MINUTES}")
+    if args.latency_min_ms < 0 or args.latency_max_ms < args.latency_min_ms:
+        raise SystemExit("--latency bounds must be non-negative and max >= min")
+    if args.futures_maker_fee_rate < 0 or args.futures_taker_fee_rate < 0:
+        raise SystemExit("--futures-maker-fee-rate and --futures-taker-fee-rate must be non-negative")
+    if args.slippage_bps < 0 or args.base_spread_bps < 0:
+        raise SystemExit("--slippage-bps and --base-spread-bps must be non-negative")
+    if args.csv and not is_btcusdt_csv_path(args.csv):
+        raise SystemExit("--csv must point to a BTCUSDT/BTC_USDT-named CSV for BTC-only research")
     result = run_search(args)
     print_report(result)
     if args.save_summary_log:
@@ -265,8 +296,12 @@ def run_search(args: argparse.Namespace) -> dict[str, Any]:
             leverage=args.simulated_leverage,
             taker_fee_rate=args.futures_taker_fee_rate,
             slippage_bps=args.slippage_bps,
+            base_spread_bps=args.base_spread_bps,
+            latency_min_ms=args.latency_min_ms,
+            latency_max_ms=args.latency_max_ms,
             maintenance_margin_rate=args.maintenance_margin_rate,
             risk_per_trade_pct=args.risk_per_trade_pct,
+            monte_carlo_iterations=args.monte_carlo_iterations,
             quality_profile=args.quality_profile,
             target_trades_per_day_min=args.target_trades_per_day_min,
             target_trades_per_day_max=args.target_trades_per_day_max,
@@ -290,7 +325,8 @@ def run_search(args: argparse.Namespace) -> dict[str, Any]:
     if args.quality_profile == "high_quality" and frequency_target["verdict"] != "achieved":
         summary_verdict = "not_profitable_frequency_target_not_met"
     summary = {
-        "summary_version": 7,
+        "summary_version": 8,
+        "report_version": "vNext Execution Simulator Build",
         "mode": f"fast_futures_{args.quality_profile}_search",
         "quality_profile": args.quality_profile,
         "target_trades_per_day_min": args.target_trades_per_day_min,
@@ -320,6 +356,10 @@ def run_search(args: argparse.Namespace) -> dict[str, Any]:
         "futures_maker_fee_rate": args.futures_maker_fee_rate,
         "futures_taker_fee_rate": args.futures_taker_fee_rate,
         "slippage_bps": args.slippage_bps,
+        "base_spread_bps": args.base_spread_bps,
+        "latency_min_ms": args.latency_min_ms,
+        "latency_max_ms": args.latency_max_ms,
+        "monte_carlo_iterations": args.monte_carlo_iterations,
         "maintenance_margin_rate": args.maintenance_margin_rate,
         "max_simulated_leverage": MAX_SIMULATED_LEVERAGE,
         "max_hold_minutes": args.max_hold_minutes,
@@ -363,7 +403,18 @@ def run_search(args: argparse.Namespace) -> dict[str, Any]:
         "days_above_5pct_pct": primary.days_above_5pct_pct if primary else 0.0,
         "max_daily_drawdown_pct": primary.max_daily_drawdown_pct if primary else 0.0,
         "fee_drag_pct": primary.fee_drag_pct if primary else 0.0,
+        "execution_latency_ms_avg": primary.execution_latency_ms_avg if primary else 0.0,
+        "execution_latency_ms_p95": primary.execution_latency_ms_p95 if primary else 0.0,
+        "spread_cost_pct": primary.spread_cost_pct if primary else 0.0,
+        "slippage_cost_pct": primary.slippage_cost_pct if primary else 0.0,
+        "missed_fill_rate": primary.missed_fill_rate if primary else 0.0,
+        "partial_fill_rate": primary.partial_fill_rate if primary else 0.0,
+        "total_execution_drag_pct": primary.total_execution_drag_pct if primary else 0.0,
         "liquidation_events": primary.liquidation_events if primary else 0,
+        "monte_carlo": primary.monte_carlo if primary else {},
+        "edge_confidence": primary.edge_confidence if primary else "LOW",
+        "bigger_move_research_note": "Backtest-only search allows holds up to 60 minutes and 0.3%-2.0% target moves when needed to overcome fees.",
+        "crypto_native_data_hooks": crypto_native_hooks_status(),
         "overfit_warning": primary.overfit_warning if primary else True,
         "walk_forward_verdict": primary_verdict,
         "verdict": summary_verdict,
@@ -406,6 +457,11 @@ def find_csv(data_dir: Path, symbol: str, timeframe: str) -> Path:
         if candidate.exists():
             return candidate
     raise FileNotFoundError(f"No BTCUSDT {timeframe} CSV found in {data_dir}")
+
+
+def is_btcusdt_csv_path(path: Path) -> bool:
+    normalized = path.name.upper().replace("_", "").replace("-", "")
+    return "BTCUSDT" in normalized and normalized.endswith(".CSV")
 
 
 def build_feature_arrays(df: pd.DataFrame) -> FeatureArrays:
@@ -854,8 +910,12 @@ def evaluate_spec(
     leverage: float,
     taker_fee_rate: float,
     slippage_bps: float,
+    base_spread_bps: float,
+    latency_min_ms: int,
+    latency_max_ms: int,
     maintenance_margin_rate: float,
     risk_per_trade_pct: float,
+    monte_carlo_iterations: int,
     quality_profile: str,
     target_trades_per_day_min: float,
     target_trades_per_day_max: float,
@@ -868,8 +928,10 @@ def evaluate_spec(
     if spec.min_spacing > 1 and len(indices) > 1:
         indices = spaced_indices(indices, spec.min_spacing)
 
-    trades = [
-        simulate_trade(
+    trades: list[SearchTrade] = []
+    missed_fills = 0
+    for index in indices:
+        trade = simulate_trade(
             index=int(index),
             spec=spec,
             arrays=arrays,
@@ -877,11 +939,16 @@ def evaluate_spec(
             leverage=leverage,
             taker_fee_rate=taker_fee_rate,
             slippage_bps=slippage_bps,
+            base_spread_bps=base_spread_bps,
+            latency_min_ms=latency_min_ms,
+            latency_max_ms=latency_max_ms,
             maintenance_margin_rate=maintenance_margin_rate,
             risk_per_trade_pct=risk_per_trade_pct,
         )
-        for index in indices
-    ]
+        if trade is None:
+            missed_fills += 1
+            continue
+        trades.append(trade)
     return summarize_trades(
         symbol=symbol,
         timeframe=timeframe,
@@ -889,8 +956,10 @@ def evaluate_spec(
         trades=trades,
         candles_tested=max(int(len(arrays.close) - max(spec.lookback, 60)), 0),
         signals_considered=int(len(indices)),
+        missed_fills=missed_fills,
         diagnostic_notional=diagnostic_notional,
         leverage=leverage,
+        monte_carlo_iterations=monte_carlo_iterations,
         quality_profile=quality_profile,
         target_trades_per_day_min=target_trades_per_day_min,
         target_trades_per_day_max=target_trades_per_day_max,
@@ -981,6 +1050,15 @@ def safe_float_at(values: np.ndarray, index: int, default: float = 0.0) -> float
     return value if math.isfinite(value) else default
 
 
+def deterministic_random(index: int, salt: float) -> float:
+    value = math.sin((index + 1) * (12.9898 + salt) + salt * 78.233) * 43758.5453
+    return value - math.floor(value)
+
+
+def execution_latency_ms(index: int, min_ms: int, max_ms: int) -> float:
+    return float(min_ms + deterministic_random(index, 1.7) * max(max_ms - min_ms, 0))
+
+
 def simulate_trade(
     index: int,
     spec: SearchSpec,
@@ -989,12 +1067,28 @@ def simulate_trade(
     leverage: float,
     taker_fee_rate: float,
     slippage_bps: float,
+    base_spread_bps: float,
+    latency_min_ms: int,
+    latency_max_ms: int,
     maintenance_margin_rate: float,
     risk_per_trade_pct: float,
-) -> SearchTrade:
+) -> SearchTrade | None:
     direction = 1 if spec.side == "buy" else -1
     entry = float(arrays.close[index])
     atr_bps = float(arrays.atr_bps[index])
+    atr_pct = safe_float_at(arrays.atr_percentile, index)
+    candle_atr = safe_float_at(arrays.candle_range_atr_ratio, index)
+    volume_ratio = safe_float_at(arrays.volume_ratio, index, 1.0)
+    latency_ms = execution_latency_ms(index, latency_min_ms, latency_max_ms)
+    missed_rate = min(0.08, 0.003 + atr_pct * 0.012 + max(candle_atr - 1.0, 0.0) * 0.006 + max(1.05 - volume_ratio, 0.0) * 0.01)
+    if deterministic_random(index, 2.9) < missed_rate:
+        return None
+    partial_rate = min(0.18, 0.015 + atr_pct * 0.025 + max(candle_atr - 1.2, 0.0) * 0.012)
+    partial_fill_ratio = 1.0
+    if deterministic_random(index, 3.9) < partial_rate:
+        partial_fill_ratio = 0.55 + deterministic_random(index, 4.9) * 0.40
+    latency_price_bps = min(8.0, atr_bps * 0.010 + candle_atr * 0.20 + latency_ms / max(latency_max_ms, 1) * 0.35)
+    entry = entry * (1 + direction * latency_price_bps / 10_000)
     target_bps = spec.target_bps
     stop_bps = spec.stop_bps
     if spec.atr_target_multiplier > 0:
@@ -1008,7 +1102,7 @@ def simulate_trade(
     stop_fraction = max(stop_bps / 10_000, 1e-9)
     max_position_notional = diagnostic_notional * max(leverage, 1.0)
     position_notional = min(max_position_notional, risk_budget / stop_fraction) if risk_budget > 0 else diagnostic_notional
-    position_notional = max(position_notional, 0.0)
+    position_notional = max(position_notional, 0.0) * partial_fill_ratio
     liq = liquidation_price(entry, spec.side, leverage, maintenance_margin_rate)
     exit_price = float(arrays.close[min(index + spec.max_hold, len(arrays.close) - 1)])
     exit_index = min(index + spec.max_hold, len(arrays.close) - 1)
@@ -1057,14 +1151,25 @@ def simulate_trade(
         exit_index = cursor
         break
 
+    if not liquidation_event:
+        exit_price = exit_price * (1 - direction * latency_price_bps / 10_000)
     gross = (exit_price - entry) / max(entry, 1e-9) * position_notional * direction
     if liquidation_event:
         margin = position_notional / max(leverage, 1e-9)
         gross = max(gross, -margin)
     exit_notional = position_notional * max(exit_price / max(entry, 1e-9), 0.0)
     fees = (position_notional + exit_notional) * taker_fee_rate
-    slippage = (position_notional + exit_notional) * slippage_bps / 10_000
-    costs = fees + slippage
+    spread_widening = 1.0 + atr_pct * 2.0 + max(candle_atr - 1.0, 0.0) * 0.65
+    if classify_market_regime(arrays, index) == "high_volatility":
+        spread_widening += 0.50
+    effective_spread_bps = min(12.0, max(base_spread_bps, base_spread_bps * spread_widening))
+    effective_slippage_bps = min(
+        25.0,
+        max(slippage_bps, slippage_bps + atr_bps * 0.015 + candle_atr * 0.30 + latency_ms / max(latency_max_ms, 1) * 0.25),
+    )
+    slippage = (position_notional + exit_notional) * effective_slippage_bps / 10_000
+    spread_costs = (position_notional + exit_notional) * effective_spread_bps / 20_000
+    costs = fees + slippage + spread_costs
     return SearchTrade(
         timestamp=float(arrays.timestamp[index]),
         entry_index=index,
@@ -1077,6 +1182,7 @@ def simulate_trade(
         gross_pnl=float(gross),
         fees=float(fees),
         slippage_costs=float(slippage),
+        spread_costs=float(spread_costs),
         total_costs=float(costs),
         net_pnl=float(gross - costs),
         position_notional=float(position_notional),
@@ -1084,6 +1190,10 @@ def simulate_trade(
         stop_bps=float(stop_bps),
         market_regime=classify_market_regime(arrays, index),
         trading_session=classify_session(safe_float_at(arrays.hour_utc, index)),
+        execution_latency_ms=latency_ms,
+        effective_spread_bps=float(effective_spread_bps),
+        effective_slippage_bps=float(effective_slippage_bps),
+        partial_fill_ratio=float(partial_fill_ratio),
         liquidation_event=liquidation_event,
     )
 
@@ -1103,8 +1213,10 @@ def summarize_trades(
     trades: list[SearchTrade],
     candles_tested: int,
     signals_considered: int,
+    missed_fills: int,
     diagnostic_notional: float,
     leverage: float,
+    monte_carlo_iterations: int,
     quality_profile: str,
     target_trades_per_day_min: float,
     target_trades_per_day_max: float,
@@ -1134,6 +1246,18 @@ def summarize_trades(
     exit_counts = Counter(trade.exit_reason for trade in trades)
     regime_performance = grouped_trade_performance(trades, "market_regime", diagnostic_notional)
     session_performance = grouped_trade_performance(trades, "trading_session", diagnostic_notional)
+    latency_values = [trade.execution_latency_ms for trade in trades]
+    monte_carlo = monte_carlo_summary(net_values, diagnostic_notional, monte_carlo_iterations)
+    edge_confidence = edge_confidence_for(
+        trades=trades,
+        net=sum(net_values),
+        pf=pf,
+        overfit_warning=overfit_warning,
+        max_drawdown_pct=max_dd_pct,
+        monte_carlo=monte_carlo,
+        regime_performance=regime_performance,
+        session_performance=session_performance,
+    )
     return SearchRow(
         symbol=symbol,
         timeframe=timeframe,
@@ -1171,6 +1295,14 @@ def summarize_trades(
         days_above_5pct_pct=daily["days_above_5pct_pct"],
         max_daily_drawdown_pct=daily["max_daily_drawdown_pct"],
         fee_drag_pct=daily["fee_drag_pct"],
+        spread_cost_pct=sum(trade.spread_costs for trade in trades) / max(diagnostic_notional, 1e-9) * 100,
+        slippage_cost_pct=sum(trade.slippage_costs for trade in trades) / max(diagnostic_notional, 1e-9) * 100,
+        total_execution_drag_pct=sum(trade.total_costs for trade in trades) / max(diagnostic_notional, 1e-9) * 100,
+        execution_latency_ms_avg=sum(latency_values) / len(latency_values) if latency_values else 0.0,
+        execution_latency_ms_p95=percentile(latency_values, 95),
+        missed_fills=missed_fills,
+        missed_fill_rate=missed_fills / max(signals_considered, 1) * 100,
+        partial_fill_rate=sum(1 for trade in trades if trade.partial_fill_ratio < 0.999) / max(len(trades), 1) * 100,
         liquidation_events=sum(1 for trade in trades if trade.liquidation_event),
         liquidation_risk_flag=bool(leverage > 1.0),
         leverage_used=leverage,
@@ -1183,6 +1315,8 @@ def summarize_trades(
         session_performance=session_performance,
         best_regime=best_group_performance(regime_performance),
         best_session=best_group_performance(session_performance),
+        monte_carlo=monte_carlo,
+        edge_confidence=edge_confidence,
     )
 
 
@@ -1253,6 +1387,100 @@ def split_stats(label: str, trades: list[SearchTrade]) -> dict[str, Any]:
         "win_rate": sum(1 for value in values if value > 0) / len(values) * 100 if values else 0.0,
         "max_drawdown": max_drawdown(values),
     }
+
+
+def percentile(values: list[float], pct: float) -> float:
+    if not values:
+        return 0.0
+    ordered = sorted(values)
+    position = min(max(pct / 100 * (len(ordered) - 1), 0.0), len(ordered) - 1)
+    lower = int(math.floor(position))
+    upper = int(math.ceil(position))
+    if lower == upper:
+        return float(ordered[lower])
+    weight = position - lower
+    return float(ordered[lower] * (1 - weight) + ordered[upper] * weight)
+
+
+def monte_carlo_summary(values: list[float], diagnostic_notional: float, iterations: int) -> dict[str, Any]:
+    if len(values) < 30 or iterations <= 0:
+        return {
+            "iterations": max(iterations, 0),
+            "status": "insufficient_trade_count",
+            "probability_positive_final_return": 0.0,
+            "survival_probability": 0.0,
+            "expected_max_drawdown_pct": 0.0,
+            "worst_case_drawdown_p95_pct": 0.0,
+            "robustness_score": 0.0,
+        }
+    sample = np.asarray(values, dtype=float)
+    seed = 20260507 + len(values) * 17 + int(abs(sum(values)) * 10_000)
+    rng = np.random.default_rng(seed)
+    finals: list[float] = []
+    drawdowns: list[float] = []
+    survived = 0
+    for _ in range(iterations):
+        path = rng.choice(sample, size=len(sample), replace=True)
+        final = float(path.sum())
+        drawdown_pct = max_drawdown(path.tolist()) / max(diagnostic_notional, 1e-9) * 100
+        finals.append(final)
+        drawdowns.append(drawdown_pct)
+        if final > 0 and drawdown_pct <= 10.0:
+            survived += 1
+    positive_probability = sum(1 for value in finals if value > 0) / iterations * 100
+    survival_probability = survived / iterations * 100
+    expected_drawdown = sum(drawdowns) / iterations if drawdowns else 0.0
+    p95_drawdown = percentile(drawdowns, 95)
+    robustness_score = max(0.0, min(100.0, survival_probability * 0.7 + positive_probability * 0.3 - max(p95_drawdown - 10.0, 0.0) * 4.0))
+    return {
+        "iterations": iterations,
+        "status": "simulated",
+        "probability_positive_final_return": positive_probability,
+        "survival_probability": survival_probability,
+        "expected_max_drawdown_pct": expected_drawdown,
+        "worst_case_drawdown_p95_pct": p95_drawdown,
+        "robustness_score": robustness_score,
+    }
+
+
+def edge_confidence_for(
+    trades: list[SearchTrade],
+    net: float,
+    pf: float | None,
+    overfit_warning: bool,
+    max_drawdown_pct: float,
+    monte_carlo: dict[str, Any],
+    regime_performance: list[dict[str, Any]],
+    session_performance: list[dict[str, Any]],
+) -> str:
+    trade_count = len(trades)
+    pf_value = 0.0 if pf is None or pf == float("inf") else pf
+    survival = float(monte_carlo.get("survival_probability") or 0.0)
+    profitable_regimes = sum(1 for row in regime_performance if int(row.get("trades") or 0) >= 10 and float(row.get("net") or 0) > 0)
+    profitable_sessions = sum(1 for row in session_performance if int(row.get("trades") or 0) >= 10 and float(row.get("net") or 0) > 0)
+    if (
+        trade_count >= 150
+        and net > 0
+        and pf_value >= 1.25
+        and not overfit_warning
+        and max_drawdown_pct <= 8.0
+        and survival >= 70.0
+        and profitable_regimes >= 2
+        and profitable_sessions >= 2
+    ):
+        return "HIGH"
+    if (
+        trade_count >= 100
+        and net > 0
+        and pf_value >= 1.15
+        and not overfit_warning
+        and max_drawdown_pct <= 10.0
+        and survival >= 55.0
+        and profitable_regimes >= 1
+        and profitable_sessions >= 1
+    ):
+        return "MEDIUM"
+    return "LOW"
 
 
 def grouped_trade_performance(
@@ -1519,6 +1747,14 @@ def row_to_dict(row: SearchRow | None) -> dict[str, Any] | None:
         "days_above_5pct_pct": row.days_above_5pct_pct,
         "max_daily_drawdown_pct": row.max_daily_drawdown_pct,
         "fee_drag_pct": row.fee_drag_pct,
+        "spread_cost_pct": row.spread_cost_pct,
+        "slippage_cost_pct": row.slippage_cost_pct,
+        "total_execution_drag_pct": row.total_execution_drag_pct,
+        "execution_latency_ms_avg": row.execution_latency_ms_avg,
+        "execution_latency_ms_p95": row.execution_latency_ms_p95,
+        "missed_fills": row.missed_fills,
+        "missed_fill_rate": row.missed_fill_rate,
+        "partial_fill_rate": row.partial_fill_rate,
         "liquidation_events": row.liquidation_events,
         "liquidation_risk_flag": row.liquidation_risk_flag,
         "leverage_used": row.leverage_used,
@@ -1531,6 +1767,8 @@ def row_to_dict(row: SearchRow | None) -> dict[str, Any] | None:
         "session_performance": row.session_performance,
         "best_regime": row.best_regime,
         "best_session": row.best_session,
+        "monte_carlo": row.monte_carlo,
+        "edge_confidence": row.edge_confidence,
         "daily_metrics": daily_summary_dict(row),
     }
 
@@ -1667,6 +1905,18 @@ def macro_news_status(args: argparse.Namespace, timestamps: np.ndarray) -> dict[
     return base
 
 
+def crypto_native_hooks_status() -> dict[str, Any]:
+    return {
+        "funding_rate": {"status": "placeholder_optional_cache", "requires_api_key": False},
+        "open_interest": {"status": "placeholder_optional_cache", "requires_api_key": False},
+        "liquidation_spikes": {"status": "placeholder_optional_cache", "requires_api_key": False},
+        "long_short_ratio": {"status": "placeholder_optional_cache", "requires_api_key": False},
+        "volume_imbalance_proxy": {"status": "available_from_ohlcv_only", "requires_api_key": False},
+        "volatility_regime_shifts": {"status": "available_from_ohlcv_only", "requires_api_key": False},
+        "note": "Safe hooks only. Missing crypto-native data does not block paper/backtest runs.",
+    }
+
+
 def append_summary(result: dict[str, Any], path: Path, run_label: str) -> None:
     summary = result["summary"]
     record = {
@@ -1694,6 +1944,8 @@ def print_report(result: dict[str, Any]) -> None:
     print(f"max_hold_minutes={summary['max_hold_minutes']} leverage_used={summary['leverage_used']} max_simulated_leverage={summary['max_simulated_leverage']} risk_per_trade_pct={summary['risk_per_trade_pct']}")
     print(f"macro_filter_enabled={summary['macro_filter_enabled']} source={summary['macro_filter_source']} reason={summary['macro_filter_reason']}")
     print(f"futures_maker_fee_rate={summary['futures_maker_fee_rate']:.6f} futures_taker_fee_rate={summary['futures_taker_fee_rate']:.6f} slippage_bps={summary['slippage_bps']:.2f}")
+    print(f"execution_latency_ms_avg={summary['execution_latency_ms_avg']:.2f} latency_p95={summary['execution_latency_ms_p95']:.2f} spread_cost_pct={summary['spread_cost_pct']:.2f} slippage_cost_pct={summary['slippage_cost_pct']:.2f} total_execution_drag_pct={summary['total_execution_drag_pct']:.2f} missed_fill_rate={summary['missed_fill_rate']:.2f}%")
+    print(f"edge_confidence={summary['edge_confidence']} monte_carlo={summary.get('monte_carlo')}")
     print(f"runtime_seconds={summary['runtime_seconds']:.2f} candles_per_second={summary['candles_per_second']:.2f} parameter_sets_per_minute={summary['parameter_sets_per_minute']:.2f}")
     print(f"system_status={summary['system_status']}")
     print(f"primary_failure={summary['primary_failure']}")

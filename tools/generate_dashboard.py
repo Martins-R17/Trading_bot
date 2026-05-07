@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import subprocess
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from html import escape
@@ -23,6 +24,7 @@ DEFAULT_SYMBOL_FILTER = "BTC/USDT"
 DAILY_TRADE_TARGET = 100.0
 DAILY_RETURN_TARGET_PCT = 5.0
 MIN_ACCEPTABLE_PF = 1.1
+REPORT_VERSION = "vNext Execution Simulator Build"
 DISPLAY_LABELS = {
     "achieved": "Achieved",
     "not_achieved": "Not achieved",
@@ -46,6 +48,15 @@ DISPLAY_LABELS = {
     "limited_30_day_dataset": "Limited 30-day dataset",
     "partial_dataset": "Partial dataset",
     "below_30_trades": "Below 30 trades",
+    "simulated": "Simulated",
+    "insufficient_trade_count": "Insufficient trade count",
+    "placeholder_optional_cache": "Optional cached placeholder",
+    "available_from_ohlcv_only": "Available from OHLCV only",
+    "True": "Yes",
+    "False": "No",
+    "LOW": "Low",
+    "MEDIUM": "Medium",
+    "HIGH": "High",
 }
 
 
@@ -133,6 +144,47 @@ def load_records(path: Path) -> list[SummaryRecord]:
     return sorted(records, key=record_sort_key)
 
 
+def get_git_info() -> dict[str, str]:
+    remote_url = run_git_value(["remote", "get-url", "origin"])
+    return {
+        "commit": run_git_value(["rev-parse", "--short", "HEAD"]),
+        "branch": run_git_value(["branch", "--show-current"]),
+        "worktree": "dirty" if run_git_value(["status", "--porcelain"]) not in {"", "n/a"} else "clean",
+        "repo_slug": github_repo_slug(remote_url),
+    }
+
+
+def run_git_value(args: list[str]) -> str:
+    try:
+        completed = subprocess.run(
+            ["git", *args],
+            cwd=Path(__file__).resolve().parents[1],
+            text=True,
+            capture_output=True,
+            check=True,
+            timeout=5,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return "n/a"
+    return completed.stdout.strip() or "n/a"
+
+
+def github_repo_slug(remote_url: str) -> str:
+    if not remote_url or remote_url == "n/a":
+        return "n/a"
+    value = remote_url.strip()
+    if value.endswith(".git"):
+        value = value[:-4]
+    marker = "github.com"
+    if marker not in value:
+        return "n/a"
+    if value.startswith("git@github.com:"):
+        return value.split("git@github.com:", 1)[1]
+    if "github.com/" in value:
+        return value.split("github.com/", 1)[1]
+    return "n/a"
+
+
 def filter_symbol_records(records: list[SummaryRecord], symbol: str) -> list[SummaryRecord]:
     filtered: list[SummaryRecord] = []
     for record in records:
@@ -164,6 +216,7 @@ def render_dashboard(
     generated_at = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
     latest_record = latest[-1] if latest else None
     latest_summary = latest_record.summary if latest_record else {}
+    git_info = get_git_info()
     best_overall = best_row(records, "best_overall")
     best_30 = best_row(records, "best_at_least_30")
     worst_overall = worst_row(records, "worst_overall")
@@ -187,6 +240,7 @@ def render_dashboard(
 </head>
 <body>
   <div id="research-shell" class="site-content">
+  {render_update_banner(generated_at, latest_record, latest_summary, git_info, symbol_filter)}
   <header class="hero">
     <div class="shell hero-grid">
       <div>
@@ -348,8 +402,28 @@ def render_dashboard(
     </section>
 
     <section class="panel span-6">
+      <h2>Execution Drag</h2>
+      {render_execution_drag_block(latest_summary)}
+    </section>
+
+    <section class="panel span-6">
+      <h2>Monte Carlo Robustness</h2>
+      {render_monte_carlo_block(latest_summary)}
+    </section>
+
+    <section class="panel span-6">
+      <h2>Bigger-Move Strategy Scope</h2>
+      {render_bigger_move_block(latest_summary)}
+    </section>
+
+    <section class="panel span-6">
       <h2>Macro / News Filter</h2>
       {render_macro_filter_block(latest_summary)}
+    </section>
+
+    <section class="panel span-6">
+      <h2>Crypto-Native Data Hooks</h2>
+      {render_crypto_hooks_block(latest_summary)}
     </section>
 
     <section class="panel span-6">
@@ -462,6 +536,60 @@ def strip_trailing_whitespace(value: str) -> str:
     return "\n".join(line.rstrip() for line in value.splitlines()) + "\n"
 
 
+def render_update_banner(
+    generated_at: str,
+    latest_record: SummaryRecord | None,
+    latest_summary: dict[str, Any],
+    git_info: dict[str, str],
+    symbol_filter: str,
+) -> str:
+    data_start = text_value(latest_summary.get("data_start") or latest_summary.get("data_period_start"))
+    data_end = text_value(latest_summary.get("data_end") or latest_summary.get("data_period_end"))
+    data_range = f"{data_start} -> {data_end}" if data_start != "n/a" and data_end != "n/a" else "n/a"
+    data_generated = short_timestamp(latest_record.logged_at_utc) if latest_record else "n/a"
+    return f"""
+  <section class="update-banner">
+    <div class="shell update-grid">
+      <div class="update-primary">
+        <span>LAST UPDATED</span>
+        <strong>{escape(generated_at)}</strong>
+        <small>Dashboard generation timestamp</small>
+      </div>
+      <div class="update-item">
+        <span>COMMIT</span>
+        <strong id="latest-commit-live" data-repo="{escape(git_info.get("repo_slug", "n/a"))}" data-branch="{escape(git_info.get("branch", "n/a"))}">{escape(git_info.get("commit", "n/a"))}</strong>
+        <small>Build hash shown; public GitHub API refreshes latest branch hash when available. Worktree at build: {escape(git_info.get("worktree", "n/a"))}</small>
+      </div>
+      <div class="update-item">
+        <span>BRANCH</span>
+        <strong>{escape(git_info.get("branch", "n/a"))}</strong>
+      </div>
+      <div class="update-item wide">
+        <span>DATA</span>
+        <strong>{escape(symbol_filter)} {escape(data_range)}</strong>
+        <small>{escape(display_label(latest_summary.get("data_coverage")))} | candles {whole(latest_summary.get("candle_count") or latest_summary.get("total_candles"))}</small>
+      </div>
+      <div class="update-item">
+        <span>DATA GENERATED</span>
+        <strong>{escape(data_generated)}</strong>
+      </div>
+      <div class="update-item">
+        <span>REPORT VERSION</span>
+        <strong>{escape(text_value(latest_summary.get("report_version") or REPORT_VERSION))}</strong>
+      </div>
+      <div class="update-item">
+        <span>BTCUSDT ONLY</span>
+        <strong>{escape(display_label(latest_summary.get("btc_only")))}</strong>
+      </div>
+      <div class="update-item">
+        <span>GITHUB PAGES</span>
+        <strong>branch /docs</strong>
+      </div>
+    </div>
+  </section>
+"""
+
+
 def render_latest_table(records: list[SummaryRecord]) -> str:
     if not records:
         return """
@@ -473,8 +601,8 @@ def render_latest_table(records: list[SummaryRecord]) -> str:
 
     rows = "\n".join(render_latest_row(record) for record in records)
     return f"""
-      <div class="table-wrap">
-        <table>
+      <div class="table-wrap latest-table-wrap">
+        <table class="data-table latest-runs-table">
           <thead>
             <tr>
               <th>Run label</th>
@@ -488,9 +616,12 @@ def render_latest_table(records: list[SummaryRecord]) -> str:
               <th>Lev</th>
               <th>Liq</th>
               <th>Trades/day</th>
+              <th>Edge Confidence</th>
               <th>5-20/day</th>
               <th>Median day</th>
               <th>Fee drag</th>
+              <th>Exec drag</th>
+              <th>Missed fills</th>
               <th>100/day</th>
               <th>5% day</th>
               <th>WF verdict</th>
@@ -500,7 +631,7 @@ def render_latest_table(records: list[SummaryRecord]) -> str:
               <th>Best overall</th>
               <th>Best 30+</th>
               <th>Best 5-20/day</th>
-              <th>Verdict</th>
+              <th class="verdict-col">Verdict</th>
             </tr>
           </thead>
           <tbody>{rows}</tbody>
@@ -524,18 +655,21 @@ def render_latest_row(record: SummaryRecord) -> str:
               <td>{number(summary.get("leverage_used"))}</td>
               <td>{escape(text_value(summary.get("liquidation_events")))}</td>
               <td>{number(summary.get("trades_per_day"))}</td>
+              <td>{edge_confidence_badge(summary.get("edge_confidence"))}</td>
               <td>{escape(display_label(summary.get("verdict_5_to_20_trades_per_day")))}</td>
               <td>{percent(summary.get("median_daily_return_pct"))}</td>
               <td>{percent(summary.get("fee_drag_pct"))}</td>
+              <td>{percent(summary.get("total_execution_drag_pct"))}</td>
+              <td>{percent(summary.get("missed_fill_rate"))}</td>
               <td>{escape(display_label(summary.get("verdict_100_trades_per_day")))}</td>
               <td>{escape(display_label(summary.get("verdict_5pct_daily_target")))}</td>
               <td>{escape(display_label(summary.get("walk_forward_verdict")))}</td>
               <td>{escape(text_value(summary.get("reject_soft_late_momentum")))}</td>
               <td>{escape(text_value(summary.get("positive_combinations_with_at_least_30_trades")))}</td>
               <td>{escape(text_value(summary.get("combinations_in_frequency_band")))}</td>
-              <td>{escape(format_row(summary.get("best_overall")))}</td>
-              <td>{escape(format_row(summary.get("best_at_least_30")))}</td>
-              <td>{escape(format_row(summary.get("best_in_5_to_20_trades_per_day")))}</td>
+              <td class="wide-text">{escape(format_row(summary.get("best_overall")))}</td>
+              <td class="wide-text">{escape(format_row(summary.get("best_at_least_30")))}</td>
+              <td class="wide-text">{escape(format_row(summary.get("best_in_5_to_20_trades_per_day")))}</td>
               <td>{verdict_tag(summary.get("verdict"))}</td>
             </tr>"""
 
@@ -564,7 +698,8 @@ def render_quick_summary(summary: dict[str, Any]) -> str:
     avg_day = percent(summary.get("avg_daily_return_pct"))
     trades_day = number(summary.get("trades_per_day"))
     issue = primary_failure_text(summary)
-    text = f"{status} | PF: {pf} | {avg_day}/day | {trades_day} trades/day | Issue: {issue}"
+    edge = display_label(summary.get("edge_confidence"))
+    text = f"{status} | PF: {pf} | {avg_day}/day | {trades_day} trades/day | Edge: {edge} | Issue: {issue}"
     return (
         '<div class="quick-summary">'
         '<span>Quick glance</span>'
@@ -615,6 +750,27 @@ def render_macro_filter_block(summary: dict[str, Any]) -> str:
     return '<div class="stacked">' + "".join(
         f'<div><strong>{escape(label)}</strong><span>{escape(value)}</span></div>' for label, value in rows
     ) + "</div>"
+
+
+def render_crypto_hooks_block(summary: dict[str, Any]) -> str:
+    hooks = safe_dict(summary.get("crypto_native_data_hooks"))
+    if not hooks:
+        return '<p class="muted">Crypto-native hooks are not present in this log yet.</p>'
+    rows = []
+    for key, value in hooks.items():
+        if key == "note":
+            continue
+        data = safe_dict(value)
+        if not data:
+            continue
+        rows.append((key.replace("_", " ").title(), f"{display_label(data.get('status'))} | API key required: {display_label(data.get('requires_api_key'))}"))
+    note = text_value(hooks.get("note"))
+    return (
+        '<div class="stacked">'
+        + "".join(f'<div><strong>{escape(label)}</strong><span>{escape(value)}</span></div>' for label, value in rows)
+        + f'<div><strong>Note</strong><span>{escape(note)}</span></div>'
+        + "</div>"
+    )
 
 
 def render_group_performance_block(summary: dict[str, Any], field: str) -> str:
@@ -763,6 +919,55 @@ def render_fee_drag_block(summary: dict[str, Any]) -> str:
         f'{metric_card("Fee drag/day", percent(summary.get("fee_drag_pct")), "warn")}'
         '</div>'
     )
+
+
+def render_execution_drag_block(summary: dict[str, Any]) -> str:
+    if not summary:
+        return '<p class="muted">Execution simulation metrics are not available yet.</p>'
+    latency_avg = f"{number(summary.get('execution_latency_ms_avg'))} ms"
+    latency_p95 = f"{number(summary.get('execution_latency_ms_p95'))} ms"
+    drag_class = "bad" if (to_float(summary.get("total_execution_drag_pct")) or 0) > 1 else "warn"
+    return (
+        '<div class="metric-grid">'
+        f'{metric_card("Latency avg", latency_avg, "neutral")}'
+        f'{metric_card("Latency p95", latency_p95, "neutral")}'
+        f'{metric_card("Spread cost", percent(summary.get("spread_cost_pct")), "warn")}'
+        f'{metric_card("Slippage cost", percent(summary.get("slippage_cost_pct")), "warn")}'
+        f'{metric_card("Total drag", percent(summary.get("total_execution_drag_pct")), drag_class)}'
+        f'{metric_card("Missed fills", percent(summary.get("missed_fill_rate")), "warn")}'
+        '</div>'
+    )
+
+
+def render_monte_carlo_block(summary: dict[str, Any]) -> str:
+    monte = safe_dict(summary.get("monte_carlo"))
+    if not monte:
+        return '<p class="muted">Monte Carlo metrics are not available yet.</p>'
+    rows = [
+        ("Status", display_label(monte.get("status"))),
+        ("Iterations", whole(monte.get("iterations"))),
+        ("Positive final return probability", percent(monte.get("probability_positive_final_return"))),
+        ("Survival probability", percent(monte.get("survival_probability"))),
+        ("Expected max drawdown", percent(monte.get("expected_max_drawdown_pct"))),
+        ("P95 worst drawdown", percent(monte.get("worst_case_drawdown_p95_pct"))),
+        ("Robustness score", number(monte.get("robustness_score"))),
+        ("Edge confidence", display_label(summary.get("edge_confidence"))),
+    ]
+    return '<div class="stacked">' + "".join(
+        f'<div><strong>{escape(label)}</strong><span>{escape(value)}</span></div>' for label, value in rows
+    ) + "</div>"
+
+
+def render_bigger_move_block(summary: dict[str, Any]) -> str:
+    rows = [
+        ("Max hold", f"{whole(summary.get('max_hold_minutes'))} minutes"),
+        ("Target move range", "0.30% - 2.00%"),
+        ("Research note", text_value(summary.get("bigger_move_research_note"))),
+        ("Reason", "Tiny high-frequency scalps remain structurally weak after realistic fees, spread, latency, and slippage."),
+    ]
+    return '<div class="stacked">' + "".join(
+        f'<div><strong>{escape(label)}</strong><span>{escape(value)}</span></div>' for label, value in rows
+    ) + "</div>"
 
 
 def render_daily_distribution_block(metrics: dict[str, Any]) -> str:
@@ -1042,6 +1247,7 @@ def render_final_summary(summary: dict[str, Any]) -> str:
     rows = [
         ("SYSTEM STATUS", status),
         ("CORE METRICS", f"avg daily {percent(summary.get('avg_daily_return_pct'))} | PF {number(row.get('pf') if row else None)} | trades/day {number(summary.get('trades_per_day'))}"),
+        ("EDGE CONFIDENCE", f"{display_label(summary.get('edge_confidence'))} | MC survival {percent(safe_dict(summary.get('monte_carlo')).get('survival_probability'))} | execution drag {percent(summary.get('total_execution_drag_pct'))}"),
         ("TARGET VERDICT", f"100/day {display_label(summary.get('verdict_100_trades_per_day'))} | 5% daily {display_label(summary.get('verdict_5pct_daily_target'))} | 5-20/day {display_label(summary.get('verdict_5_to_20_trades_per_day'))}"),
         ("MAIN FAILURE", issue),
         ("BEST STRATEGY", strategy),
@@ -1121,15 +1327,17 @@ def render_strategy_leaderboard(rows: list[dict[str, Any]]) -> str:
             f"<td>{number(row.get('trades_per_day'))}</td>"
             f"<td>{money(row.get('net'))}</td>"
             f"<td>{number(row.get('pf'))}</td>"
+            f"<td>{edge_confidence_badge(row.get('edge_confidence'))}</td>"
             f"<td>{percent(row.get('median_daily_return_pct'))}</td>"
             f"<td>{percent(row.get('fee_drag_pct'))}</td>"
+            f"<td>{percent(row.get('total_execution_drag_pct'))}</td>"
             f"<td>{verdict_tag(row.get('walk_forward_verdict'))}</td>"
             "</tr>"
         )
     return (
-        '<div class="table-wrap compact"><table class="leaderboard"><thead><tr>'
+        '<div class="table-wrap compact leaderboard-wrap"><table class="leaderboard data-table"><thead><tr>'
         '<th>#</th><th>Tf</th><th>Agent</th><th>Strategy</th><th>Trades</th><th>TPD</th>'
-        '<th>Net</th><th>PF</th><th>Med day</th><th>Fee drag</th><th>WF</th>'
+        '<th>Net</th><th>PF</th><th>Edge</th><th>Med day</th><th>Fee drag</th><th>Exec drag</th><th class="verdict-col">WF</th>'
         f'</tr></thead><tbody>{body}</tbody></table></div>'
     )
 
@@ -1146,6 +1354,13 @@ def verdict_tag(value: Any) -> str:
     verdict = text_value(value)
     class_name = verdict_class(verdict)
     return f'<span class="tag {class_name} verdict-badge">{escape(display_label(verdict))}</span>'
+
+
+def edge_confidence_badge(value: Any) -> str:
+    label = display_label(value)
+    raw = text_value(value).upper()
+    class_name = "good" if raw == "HIGH" else "warn" if raw == "MEDIUM" else "bad"
+    return f'<span class="tag {class_name} edge-badge">{escape(label)}</span>'
 
 
 def verdict_class(value: Any) -> str:
@@ -1310,6 +1525,8 @@ def scalping_leaderboard_rows(records: list[SummaryRecord]) -> list[dict[str, An
                         "pf": row.get("pf"),
                         "median_daily_return_pct": row.get("median_daily_return_pct"),
                         "fee_drag_pct": row.get("fee_drag_pct"),
+                        "total_execution_drag_pct": row.get("total_execution_drag_pct"),
+                        "edge_confidence": row.get("edge_confidence"),
                         "walk_forward_verdict": row.get("verdict") or row.get("walk_forward_verdict"),
                     }
                     dedupe_key = leaderboard_dedupe_key(candidate)
@@ -1331,6 +1548,8 @@ def scalping_leaderboard_rows(records: list[SummaryRecord]) -> list[dict[str, An
                 "pf": row.get("pf"),
                 "median_daily_return_pct": daily.get("median_daily_return_pct"),
                 "fee_drag_pct": daily.get("fee_drag_pct"),
+                "total_execution_drag_pct": row.get("total_execution_drag_pct") or record.summary.get("total_execution_drag_pct"),
+                "edge_confidence": row.get("edge_confidence") or record.summary.get("edge_confidence"),
                 "walk_forward_verdict": row.get("walk_forward_verdict") or record.summary.get("walk_forward_verdict"),
             }
             dedupe_key = leaderboard_dedupe_key(leaderboard_row)
@@ -1350,14 +1569,13 @@ def scalping_leaderboard_rows(records: list[SummaryRecord]) -> list[dict[str, An
     )
 
 
-def leaderboard_dedupe_key(row: dict[str, Any]) -> tuple[str, str, str, str, str, str]:
+def leaderboard_dedupe_key(row: dict[str, Any]) -> tuple[str, str, str, str, str]:
     return (
-        str(row.get("run_label")),
         str(row.get("timeframe")),
+        str(row.get("agent_name")),
         str(row.get("strategy")),
         str(row.get("trades")),
-        str(row.get("net")),
-        str(row.get("pf")),
+        f"{to_float(row.get('net')) or 0.0:.4f}",
     )
 
 
