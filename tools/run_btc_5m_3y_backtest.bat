@@ -22,7 +22,7 @@ if not exist "data\historical_3y_5m\BTCUSDT_5m.csv" (
 if not exist "data" mkdir "data"
 if not exist "data\backtest_logs" mkdir "data\backtest_logs"
 
-for /f %%i in ('powershell -NoProfile -Command "Get-Date -Format yyyyMMdd_HHmmss"') do set "RUN_TS=%%i"
+for /f %%i in ('powershell -NoProfile -Command "[TimeZoneInfo]::ConvertTimeBySystemTimeZoneId((Get-Date), 'GMT Standard Time').ToString('yyyyMMdd_HHmmss')"') do set "RUN_TS=%%i"
 set "RUN_LABEL=btc_5m_3y_single_baseline_%RUN_TS%"
 set "OUTPUT_FILE=data\btc_5m_3y_single_baseline_%RUN_TS%.txt"
 

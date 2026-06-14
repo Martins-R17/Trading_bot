@@ -1,20 +1,18 @@
 (() => {
-  const commitNode = document.getElementById("latest-commit-live");
-  if (commitNode) {
-    const { repo, branch } = commitNode.dataset;
-    if (repo && branch && repo !== "n/a" && branch !== "n/a") {
+  const deploymentNode = document.getElementById("deployment-commit-live");
+  if (deploymentNode) {
+    const { repo, branch } = deploymentNode.dataset;
+    if (repo && branch && repo !== "n/a") {
       fetch(`https://api.github.com/repos/${repo}/commits/${encodeURIComponent(branch)}`, {
         headers: { Accept: "application/vnd.github+json" },
       })
         .then((response) => (response.ok ? response.json() : null))
         .then((payload) => {
           const sha = payload && typeof payload.sha === "string" ? payload.sha : "";
-          if (!sha) return;
-          commitNode.textContent = sha.slice(0, 7);
-          commitNode.title = `Latest public GitHub branch commit: ${sha}`;
+          if (sha) deploymentNode.textContent = sha.slice(0, 7);
         })
         .catch(() => {
-          commitNode.title = "Showing build-time commit hash; live GitHub check unavailable.";
+          deploymentNode.textContent = "unavailable";
         });
     }
   }
