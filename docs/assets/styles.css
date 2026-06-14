@@ -45,9 +45,8 @@ body {
 }
 
 .update-banner {
-  position: sticky;
-  top: 0;
-  z-index: 50;
+  position: relative;
+  z-index: 1;
   padding: 14px 0;
   border-bottom: 1px solid rgba(232, 121, 42, 0.42);
   background:
@@ -393,6 +392,229 @@ h3 {
   font-size: 22px;
   font-weight: 780;
   word-break: break-word;
+}
+
+.profitability-panel {
+  border-color: rgba(224, 118, 52, 0.38);
+  background:
+    linear-gradient(180deg, rgba(205, 101, 42, 0.12), transparent 180px),
+    linear-gradient(90deg, rgba(242, 161, 95, 0.055), transparent 58%),
+    var(--panel);
+}
+
+.profitability-head {
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.profitability-outcome {
+  min-width: 138px;
+  border-radius: 8px;
+}
+
+.profitability-metrics {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+  margin-bottom: 16px;
+}
+
+.walk-forward-summary {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+  margin: 16px 0;
+}
+
+@media (max-width: 760px) {
+  .walk-forward-summary {
+    grid-template-columns: 1fr 1fr;
+  }
+}
+
+.profitability-metrics .metric {
+  min-height: 82px;
+  padding: 12px;
+  border-color: rgba(224, 118, 52, 0.22);
+  background: rgba(12, 11, 10, 0.55);
+}
+
+.profitability-metrics .metric .value {
+  font-size: 18px;
+  line-height: 1.15;
+  overflow-wrap: anywhere;
+}
+
+.profitability-chart-wrap {
+  overflow-x: auto;
+  border: 1px solid rgba(224, 118, 52, 0.28);
+  border-radius: 8px;
+  background:
+    linear-gradient(180deg, rgba(242, 161, 95, 0.045), transparent 42%),
+    #0d0c0b;
+}
+
+.profitability-chart {
+  display: block;
+  width: 100%;
+  min-width: 720px;
+  height: auto;
+}
+
+.profitability-plot-bg {
+  fill: rgba(255, 255, 255, 0.018);
+  stroke: rgba(224, 118, 52, 0.12);
+}
+
+.profitability-grid-line {
+  stroke: rgba(244, 239, 229, 0.09);
+  stroke-width: 1;
+  vector-effect: non-scaling-stroke;
+}
+
+.profitability-axis-label,
+.profitability-plot-label {
+  fill: #9f9689;
+  font-family: Inter, "Segoe UI", Arial, sans-serif;
+  font-size: 11px;
+  letter-spacing: 0;
+}
+
+.profitability-plot-label {
+  fill: #d98a55;
+  font-size: 10px;
+  font-weight: 760;
+}
+
+.profitability-x-label {
+  font-size: 10px;
+}
+
+.profitability-loss-zone {
+  fill: rgba(255, 111, 97, 0.055);
+}
+
+.profitability-baseline {
+  stroke: rgba(244, 239, 229, 0.34);
+  stroke-width: 1;
+  stroke-dasharray: 5 5;
+  vector-effect: non-scaling-stroke;
+}
+
+.profitability-equity-area {
+  fill: url(#profitability-area);
+}
+
+.profitability-equity-line {
+  fill: none;
+  stroke: #ee9557;
+  stroke-width: 3;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  vector-effect: non-scaling-stroke;
+  filter: drop-shadow(0 0 6px rgba(238, 149, 87, 0.25));
+}
+
+.profitability-endpoint {
+  fill: #ee9557;
+  stroke: #171512;
+  stroke-width: 3;
+  vector-effect: non-scaling-stroke;
+}
+
+.profitability-endpoint.profit {
+  fill: var(--green);
+}
+
+.profitability-endpoint.loss {
+  fill: var(--red);
+}
+
+.profitability-drawdown-bg {
+  fill: rgba(255, 255, 255, 0.018);
+  stroke: rgba(224, 118, 52, 0.12);
+}
+
+.profitability-drawdown-area {
+  fill: url(#drawdown-area);
+}
+
+.profitability-drawdown-line {
+  fill: none;
+  stroke: #d86f43;
+  stroke-width: 1.5;
+  stroke-linejoin: round;
+  vector-effect: non-scaling-stroke;
+}
+
+.profitability-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px 22px;
+  padding: 11px 14px;
+  border-top: 1px solid rgba(224, 118, 52, 0.16);
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.profitability-legend span {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.profitability-legend i {
+  display: inline-block;
+  width: 20px;
+  height: 3px;
+  background: #ee9557;
+}
+
+.profitability-legend i.baseline {
+  height: 1px;
+  background: repeating-linear-gradient(90deg, rgba(244, 239, 229, 0.62) 0 4px, transparent 4px 7px);
+}
+
+.profitability-legend i.drawdown {
+  background: #d86f43;
+}
+
+.profitability-caption {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 8px 18px;
+  margin-top: 10px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.profitability-note.warn {
+  color: var(--amber);
+}
+
+.profitability-empty {
+  display: grid;
+  min-height: 220px;
+  place-content: center;
+  gap: 7px;
+  padding: 28px;
+  border: 1px dashed rgba(224, 118, 52, 0.32);
+  border-radius: 8px;
+  background:
+    linear-gradient(135deg, rgba(224, 118, 52, 0.07), transparent 55%),
+    rgba(12, 11, 10, 0.45);
+  text-align: center;
+}
+
+.profitability-empty strong {
+  color: #efa06a;
+  font-size: 18px;
+}
+
+.profitability-empty span {
+  max-width: 620px;
+  color: var(--muted);
 }
 
 .target-tape {
@@ -837,6 +1059,7 @@ li + li {
 
   .metric-grid,
   .metric-grid.five,
+  .profitability-metrics,
   .target-tape,
   .bar-row,
   .scatter-row,
@@ -879,6 +1102,14 @@ li + li {
   .data-window,
   .summary-grid {
     grid-template-columns: 1fr;
+  }
+
+  .profitability-metrics {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .profitability-metrics .metric .value {
+    font-size: 16px;
   }
 
   .panel {

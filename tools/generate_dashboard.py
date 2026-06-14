@@ -9,12 +9,14 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import subprocess
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from html import escape
 from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo
 
 
 DEFAULT_LOG_PATH = Path("data/backtest_logs/realized_sweep_summary.jsonl")
@@ -25,6 +27,10 @@ DAILY_TRADE_TARGET = 100.0
 DAILY_RETURN_TARGET_PCT = 5.0
 MIN_ACCEPTABLE_PF = 1.1
 REPORT_VERSION = "vNext Execution Simulator Build"
+UK_TIMEZONE = ZoneInfo("Europe/London")
+MAX_PROFITABILITY_POINTS = 180
+MAX_SERIES_SCAN_POINTS = 5000
+MAX_ABS_SERIES_VALUE = 1_000_000_000_000.0
 DISPLAY_LABELS = {
     "achieved": "Achieved",
     "not_achieved": "Not achieved",
@@ -57,6 +63,7 @@ DISPLAY_LABELS = {
     "LOW": "Low",
     "MEDIUM": "Medium",
     "HIGH": "High",
+    "walk_forward_selected_portfolio": "WF Selected Portfolio",
 }
 
 
@@ -213,7 +220,7 @@ def render_dashboard(
     latest: list[SummaryRecord],
     symbol_filter: str,
 ) -> str:
-    generated_at = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+    generated_at = datetime.now(UK_TIMEZONE).strftime("%Y-%m-%d %H:%M:%S UK time")
     latest_record = latest[-1] if latest else None
     latest_summary = latest_record.summary if latest_record else {}
     git_info = get_git_info()
@@ -349,6 +356,10 @@ def render_dashboard(
         </div>
       </div>
       {render_latest_table(latest)}
+    </section>
+
+    <section class="panel span-12 profitability-panel">
+      {render_profitability_panel(latest_summary)}
     </section>
 
     <section class="panel span-12">
@@ -496,7 +507,6 @@ def render_dashboard(
       <ul class="clean">
         <li>Fee and slippage sensitivity tables for BTC-only candidates.</li>
         <li>Entry-only clusters by session/time-of-day if timestamp diagnostics justify it.</li>
-        <li>Drawdown and equity-curve snapshots from compact summaries.</li>
         <li>Walk-forward stability score for candidate ranking.</li>
       </ul>
     </section>
@@ -543,8 +553,8 @@ def render_update_banner(
     git_info: dict[str, str],
     symbol_filter: str,
 ) -> str:
-    data_start = text_value(latest_summary.get("data_start") or latest_summary.get("data_period_start"))
-    data_end = text_value(latest_summary.get("data_end") or latest_summary.get("data_period_end"))
+    data_start = uk_timestamp(latest_summary.get("data_start") or latest_summary.get("data_period_start"))
+    data_end = uk_timestamp(latest_summary.get("data_end") or latest_summary.get("data_period_end"))
     data_range = f"{data_start} -> {data_end}" if data_start != "n/a" and data_end != "n/a" else "n/a"
     data_generated = short_timestamp(latest_record.logged_at_utc) if latest_record else "n/a"
     return f"""
@@ -556,9 +566,14 @@ def render_update_banner(
         <small>Dashboard generation timestamp</small>
       </div>
       <div class="update-item">
-        <span>COMMIT</span>
-        <strong id="latest-commit-live" data-repo="{escape(git_info.get("repo_slug", "n/a"))}" data-branch="{escape(git_info.get("branch", "n/a"))}">{escape(git_info.get("commit", "n/a"))}</strong>
-        <small>Build hash shown; public GitHub API refreshes latest branch hash when available. Worktree at build: {escape(git_info.get("worktree", "n/a"))}</small>
+        <span>REPORT BUILD COMMIT</span>
+        <strong>{escape(git_info.get("commit", "n/a"))}</strong>
+        <small>Immutable build-time hash. Worktree at build: {escape(git_info.get("worktree", "n/a"))}</small>
+      </div>
+      <div class="update-item">
+        <span>DEPLOYMENT COMMIT</span>
+        <strong id="deployment-commit-live" data-repo="{escape(git_info.get("repo_slug", "n/a"))}" data-branch="main">{escape(git_info.get("commit", "n/a"))}</strong>
+        <small>Latest public main commit; report freshness is still governed by the timestamps shown here.</small>
       </div>
       <div class="update-item">
         <span>BRANCH</span>
@@ -617,7 +632,7 @@ def render_latest_table(records: list[SummaryRecord]) -> str:
               <th>Liq</th>
               <th>Trades/day</th>
               <th>Edge Confidence</th>
-              <th>5-20/day</th>
+              <th>5-10/day</th>
               <th>Median day</th>
               <th>Fee drag</th>
               <th>Exec drag</th>
@@ -630,7 +645,7 @@ def render_latest_table(records: list[SummaryRecord]) -> str:
               <th>Freq rows</th>
               <th>Best overall</th>
               <th>Best 30+</th>
-              <th>Best 5-20/day</th>
+              <th>Best 5-10/day</th>
               <th class="verdict-col">Verdict</th>
             </tr>
           </thead>
@@ -683,8 +698,8 @@ def render_data_window(summary: dict[str, Any]) -> str:
         f'<span>Timeframes: {escape(format_list(summary.get("timeframes")))}</span>'
         f'<span>Profile: {escape(text_value(summary.get("quality_profile") or summary.get("mode")))}</span>'
         f'<span>Frequency target: {number(summary.get("target_trades_per_day_min"))}-{number(summary.get("target_trades_per_day_max"))}/day</span>'
-        f'<span>Start: {escape(text_value(summary.get("data_period_start")))}</span>'
-        f'<span>End: {escape(text_value(summary.get("data_period_end")))}</span>'
+        f'<span>Start: {escape(uk_timestamp(summary.get("data_period_start")))}</span>'
+        f'<span>End: {escape(uk_timestamp(summary.get("data_period_end")))}</span>'
         f'<span>Production target: {number(summary.get("production_min_target_move_bps"))} bps</span>'
         f'<span>Production reward/cost: {number(summary.get("production_min_reward_cost_ratio"))}x</span>'
         "</div>"
@@ -714,8 +729,8 @@ def render_data_coverage_block(summary: dict[str, Any]) -> str:
     warning = text_value(summary.get("data_coverage_warning"))
     rows = [
         ("Backtest Period", display_label(summary.get("data_coverage"))),
-        ("Data Start", text_value(summary.get("data_start") or summary.get("data_period_start"))),
-        ("Data End", text_value(summary.get("data_end") or summary.get("data_period_end"))),
+        ("Data Start", uk_timestamp(summary.get("data_start") or summary.get("data_period_start"))),
+        ("Data End", uk_timestamp(summary.get("data_end") or summary.get("data_period_end"))),
         ("Calendar Days", days(summary.get("backtest_days") or summary.get("approx_days"))),
         ("Years Covered", number(summary.get("data_years"))),
         ("Candle Count", whole(summary.get("candle_count") or summary.get("total_candles"))),
@@ -988,6 +1003,414 @@ def render_daily_distribution_block(metrics: dict[str, Any]) -> str:
     ) + "</div>"
 
 
+def render_profitability_panel(summary: dict[str, Any]) -> str:
+    fallback_candidate = safe_dict(summary.get("best_at_least_30")) or safe_dict(summary.get("best_overall"))
+    latest_candidate = safe_dict(summary.get("latest_backtest_profitability")) or safe_dict(summary.get("oos_summary"))
+    chart_context = safe_dict(summary.get("profitability_chart")) or safe_dict(summary.get("profitability"))
+    candidate = {**fallback_candidate, **latest_candidate, **chart_context}
+    daily = daily_metrics_from_summary(summary, candidate)
+    equity, equity_unit, drawdown, drawdown_unit = profitability_series(summary, candidate)
+    net_value, net_numeric = profitability_net_metric(summary, candidate)
+    outcome_class = "good" if net_numeric is not None and net_numeric > 0 else "bad" if net_numeric is not None and net_numeric < 0 else "neutral"
+    outcome = "Profit recorded" if outcome_class == "good" else "Loss recorded" if outcome_class == "bad" else "Flat / unavailable"
+    timeframe = candidate.get("timeframe") or summary.get("timeframe") or format_list(summary.get("timeframes"))
+    strategy = candidate.get("strategy") or candidate.get("strategy_name") or summary.get("strategy_name")
+    side = candidate.get("side") or summary.get("side")
+    max_dd_value = profitability_drawdown_metric(summary, candidate, drawdown, drawdown_unit)
+    trades_per_day = candidate.get("trades_per_day")
+    if trades_per_day is None:
+        trades_per_day = daily.get("trades_per_day", summary.get("trades_per_day"))
+    profit_factor = candidate.get("pf") if candidate.get("pf") is not None else summary.get("pf")
+    edge_confidence = candidate.get("edge_confidence") or summary.get("edge_confidence")
+    metrics = "".join(
+        (
+            metric_card("Timeframe", text_value(timeframe), "neutral"),
+            metric_card("Strategy", display_label(strategy), "neutral"),
+            metric_card("Side", display_label(side), "neutral"),
+            metric_card("Profit factor", number(profit_factor), profitability_value_class(profit_factor, 1.0)),
+            metric_card("Net return", net_value, outcome_class),
+            metric_card("Max drawdown", max_dd_value, "bad" if max_dd_value != "n/a" else "neutral"),
+            metric_card("Trades / day", number(trades_per_day), "neutral"),
+            metric_card("Edge Confidence", display_label(edge_confidence), edge_confidence_class(edge_confidence)),
+        )
+    )
+    header = f"""
+      <div class="section-head profitability-head">
+        <div>
+          <p class="eyebrow">Latest compact trace</p>
+          <h2>Latest Backtest Profitability</h2>
+        </div>
+        <span class="tag {outcome_class} profitability-outcome">{escape(outcome)}</span>
+      </div>
+      <div class="profitability-metrics">{metrics}</div>
+"""
+    if len(equity) < 2:
+        return header + """
+      <div class="profitability-empty" role="status">
+        <strong>Profitability curve unavailable</strong>
+        <span>The latest compact JSONL summary does not contain at least two valid equity_curve samples. Logged result metrics remain visible above.</span>
+      </div>
+"""
+    chart = render_profitability_svg(equity, equity_unit, drawdown, drawdown_unit)
+    drawdown_note = "" if drawdown else '<span class="profitability-note warn">Drawdown series unavailable in this summary.</span>'
+    return header + chart + f"""
+      <div class="profitability-caption">
+        <span>Compact summary trace: {len(equity)} equity samples{f' / {len(drawdown)} drawdown samples' if drawdown else ''}.</span>
+        {drawdown_note}
+      </div>
+"""
+
+
+def profitability_series(
+    summary: dict[str, Any],
+    candidate: dict[str, Any],
+) -> tuple[list[tuple[str, float]], str, list[tuple[str, float]], str]:
+    sources = [
+        safe_dict(summary.get("profitability_chart")),
+        safe_dict(summary.get("profitability")),
+        candidate,
+        summary,
+    ]
+    sources = [source for index, source in enumerate(sources) if source and source not in sources[:index]]
+    equity_raw, equity_source, equity_key = first_series_value(
+        sources,
+        ("equity_curve", "equity_curve_pct", "cumulative_return", "cumulative_pnl"),
+    )
+    drawdown_raw, drawdown_source, drawdown_key = first_series_value(
+        sources,
+        ("drawdown", "drawdown_series", "drawdown_curve", "drawdown_pct"),
+    )
+    equity = extract_numeric_series(
+        equity_raw,
+        ("equity", "value", "return", "return_pct", "cumulative_return", "pnl", "net"),
+    )
+    if drawdown_raw is None and isinstance(equity_raw, (list, tuple, dict)):
+        drawdown_raw = equity_raw
+        drawdown_source = equity_source
+    drawdown = extract_numeric_series(
+        drawdown_raw,
+        ("drawdown", "drawdown_pct", "dd", "value"),
+        require_named_value=drawdown_raw is equity_raw,
+    )
+    equity = compact_series(equity, MAX_PROFITABILITY_POINTS)
+    drawdown = compact_series(drawdown, MAX_PROFITABILITY_POINTS)
+    equity_unit = chart_series_unit(equity_raw, equity_source, equity_key, "equity", candidate, equity)
+    drawdown_unit = chart_series_unit(drawdown_raw, drawdown_source, drawdown_key, "drawdown", candidate, drawdown)
+    return equity, equity_unit, drawdown, drawdown_unit
+
+
+def first_series_value(
+    sources: list[dict[str, Any]],
+    keys: tuple[str, ...],
+) -> tuple[Any, dict[str, Any], str]:
+    for source in sources:
+        for key in keys:
+            if key in source and source.get(key) not in (None, [], {}):
+                return source.get(key), source, key
+    return None, {}, ""
+
+
+def extract_numeric_series(
+    raw: Any,
+    value_keys: tuple[str, ...],
+    require_named_value: bool = False,
+) -> list[tuple[str, float]]:
+    labels: list[Any] = []
+    data = raw
+    if isinstance(raw, dict):
+        labels_value = raw.get("labels")
+        labels = labels_value if isinstance(labels_value, list) else []
+        for key in ("points", "values", "data", "series"):
+            if isinstance(raw.get(key), (list, tuple)):
+                data = raw.get(key)
+                break
+    if not isinstance(data, (list, tuple)):
+        return []
+
+    points: list[tuple[str, float]] = []
+    for index, item in enumerate(data[:MAX_SERIES_SCAN_POINTS]):
+        label = labels[index] if index < len(labels) else ""
+        value: Any = item
+        if isinstance(item, dict):
+            label = next(
+                (item.get(key) for key in ("label", "timestamp", "time", "date", "trade", "index", "x") if item.get(key) not in (None, "")),
+                label,
+            )
+            named_values = [item.get(key) for key in value_keys if item.get(key) is not None]
+            if not named_values:
+                continue
+            value = named_values[0]
+        elif require_named_value:
+            continue
+        numeric = finite_series_value(value)
+        if numeric is None:
+            continue
+        points.append((str(label)[:48], numeric))
+    return points
+
+
+def finite_series_value(value: Any) -> float | None:
+    if isinstance(value, bool):
+        return None
+    numeric = to_float(value)
+    if numeric is None or not math.isfinite(numeric) or abs(numeric) > MAX_ABS_SERIES_VALUE:
+        return None
+    return numeric
+
+
+def compact_series(points: list[tuple[str, float]], limit: int) -> list[tuple[str, float]]:
+    if len(points) <= limit:
+        return points
+    required = {0, len(points) - 1}
+    values = [value for _, value in points]
+    required.add(values.index(min(values)))
+    required.add(values.index(max(values)))
+    target_remaining = max(limit - len(required), 0)
+    if target_remaining:
+        step = (len(points) - 1) / (target_remaining + 1)
+        required.update(round(step * index) for index in range(1, target_remaining + 1))
+    selected = sorted(required)
+    if len(selected) > limit:
+        selected = selected[: limit - 1] + [len(points) - 1]
+    return [points[index] for index in selected]
+
+
+def chart_series_unit(
+    raw: Any,
+    source: dict[str, Any],
+    source_key: str,
+    series_name: str,
+    candidate: dict[str, Any],
+    points: list[tuple[str, float]],
+) -> str:
+    unit: Any = None
+    for key in (f"{series_name}_unit", f"{source_key}_unit"):
+        if source.get(key) not in (None, ""):
+            unit = source.get(key)
+            break
+    if unit in (None, "") and isinstance(raw, dict):
+        unit = raw.get("unit")
+    if unit in (None, ""):
+        unit = source.get("unit")
+    normalized = str(unit or "").strip().lower()
+    if normalized in {"%", "pct", "percent", "percentage", "return_pct"} or source_key.endswith("_pct"):
+        return "%"
+    if normalized in {"$", "usd", "usdt", "money", "currency", "pnl", "net"}:
+        return "$"
+    if series_name == "drawdown" and candidate.get("max_drawdown_pct") is not None:
+        return "%"
+    if series_name == "equity" and len(points) >= 2:
+        net = finite_series_value(candidate.get("net"))
+        delta = points[-1][1] - points[0][1]
+        if net is not None and math.isclose(delta, net, rel_tol=0.02, abs_tol=0.02):
+            return "$"
+        if net is not None and math.isclose(points[-1][1], net, rel_tol=0.02, abs_tol=0.02):
+            return "$"
+    return ""
+
+
+def profitability_net_metric(summary: dict[str, Any], candidate: dict[str, Any]) -> tuple[str, float | None]:
+    for source in (candidate, summary):
+        for key in ("net_return_pct", "total_return_pct", "return_pct"):
+            numeric = finite_series_value(source.get(key))
+            if numeric is not None:
+                return percent(numeric), numeric
+    for source in (candidate, summary):
+        numeric = finite_series_value(source.get("net"))
+        if numeric is not None:
+            return f"{money(numeric)} P&L", numeric
+    return "n/a", None
+
+
+def profitability_drawdown_metric(
+    summary: dict[str, Any],
+    candidate: dict[str, Any],
+    drawdown: list[tuple[str, float]],
+    unit: str,
+) -> str:
+    for source in (candidate, summary):
+        numeric = finite_series_value(source.get("max_drawdown_pct"))
+        if numeric is not None:
+            return percent(abs(numeric))
+    for source in (candidate, summary):
+        numeric = finite_series_value(source.get("max_drawdown"))
+        if numeric is not None:
+            return money(abs(numeric)) if unit == "$" else chart_axis_value(abs(numeric), unit)
+    if drawdown:
+        maximum = max(abs(value) for _, value in drawdown)
+        return chart_axis_value(maximum, unit)
+    return "n/a"
+
+
+def profitability_value_class(value: Any, threshold: float = 0.0) -> str:
+    numeric = finite_series_value(value)
+    if numeric is None:
+        return "neutral"
+    return "good" if numeric > threshold else "bad" if numeric < threshold else "neutral"
+
+
+def edge_confidence_class(value: Any) -> str:
+    normalized = text_value(value).upper()
+    return "good" if normalized == "HIGH" else "warn" if normalized == "MEDIUM" else "bad" if normalized == "LOW" else "neutral"
+
+
+def render_profitability_svg(
+    equity: list[tuple[str, float]],
+    equity_unit: str,
+    drawdown: list[tuple[str, float]],
+    drawdown_unit: str,
+) -> str:
+    width, height = 1120.0, 390.0
+    left, right = 72.0, 22.0
+    plot_width = width - left - right
+    equity_top, equity_bottom = 28.0, 248.0
+    drawdown_top, drawdown_bottom = 294.0, 354.0
+    equity_values = [value for _, value in equity]
+    equity_min, equity_max = min(equity_values), max(equity_values)
+    if math.isclose(equity_min, equity_max):
+        padding = max(abs(equity_min) * 0.05, 1.0)
+    else:
+        padding = (equity_max - equity_min) * 0.10
+    equity_min -= padding
+    equity_max += padding
+    equity_coords = chart_coordinates(equity_values, left, equity_top, plot_width, equity_bottom - equity_top, equity_min, equity_max)
+    equity_path = svg_path(equity_coords)
+    baseline_y = chart_y(equity_values[0], equity_top, equity_bottom - equity_top, equity_min, equity_max)
+    area_path = f"{equity_path} L {equity_coords[-1][0]:.2f} {baseline_y:.2f} L {equity_coords[0][0]:.2f} {baseline_y:.2f} Z"
+    grid = []
+    for index in range(5):
+        value = equity_max - (equity_max - equity_min) * index / 4
+        y = equity_top + (equity_bottom - equity_top) * index / 4
+        grid.append(
+            f'<line class="profitability-grid-line" x1="{left:.2f}" y1="{y:.2f}" x2="{width - right:.2f}" y2="{y:.2f}" />'
+            f'<text class="profitability-axis-label" x="{left - 12:.2f}" y="{y + 4:.2f}" text-anchor="end">{escape(chart_axis_value(value, equity_unit))}</text>'
+        )
+
+    loss_zone = ""
+    if equity_min < equity_values[0]:
+        loss_height = max(equity_bottom - baseline_y, 0.0)
+        loss_zone = f'<rect class="profitability-loss-zone" x="{left:.2f}" y="{baseline_y:.2f}" width="{plot_width:.2f}" height="{loss_height:.2f}" />'
+
+    end_class = "profit" if equity_values[-1] > equity_values[0] else "loss" if equity_values[-1] < equity_values[0] else "flat"
+    drawdown_markup = render_drawdown_svg(drawdown, drawdown_unit, left, plot_width, drawdown_top, drawdown_bottom)
+    x_positions = (0, len(equity) - 1) if len(equity) == 2 else (0, len(equity) // 2, len(equity) - 1)
+    x_labels = []
+    default_labels = ("Start", "Latest") if len(equity) == 2 else ("Start", "Midpoint", "Latest")
+    for label_index, point_index in enumerate(x_positions):
+        x = left + plot_width * point_index / max(len(equity) - 1, 1)
+        label = equity[point_index][0] or default_labels[label_index]
+        anchor = "start" if label_index == 0 else "end" if label_index == len(x_positions) - 1 else "middle"
+        x_labels.append(
+            f'<text class="profitability-axis-label profitability-x-label" x="{x:.2f}" y="378" text-anchor="{anchor}">{escape(label[:28])}</text>'
+        )
+    aria_label = (
+        f"Equity curve from {chart_axis_value(equity_values[0], equity_unit)} "
+        f"to {chart_axis_value(equity_values[-1], equity_unit)}"
+    )
+    return f"""
+      <div class="profitability-chart-wrap">
+        <svg class="profitability-chart" viewBox="0 0 1120 390" role="img" aria-label="{escape(aria_label)}">
+          <title>Latest backtest equity curve and drawdown</title>
+          <defs>
+            <linearGradient id="profitability-area" x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0%" stop-color="#f2a15f" stop-opacity="0.38" />
+              <stop offset="100%" stop-color="#a94f1f" stop-opacity="0.02" />
+            </linearGradient>
+            <linearGradient id="drawdown-area" x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0%" stop-color="#db7544" stop-opacity="0.12" />
+              <stop offset="100%" stop-color="#ff6f61" stop-opacity="0.48" />
+            </linearGradient>
+          </defs>
+          <rect class="profitability-plot-bg" x="{left:.2f}" y="{equity_top:.2f}" width="{plot_width:.2f}" height="{equity_bottom - equity_top:.2f}" />
+          {''.join(grid)}
+          {loss_zone}
+          <line class="profitability-baseline" x1="{left:.2f}" y1="{baseline_y:.2f}" x2="{width - right:.2f}" y2="{baseline_y:.2f}" />
+          <path class="profitability-equity-area" d="{area_path}" />
+          <path class="profitability-equity-line" d="{equity_path}" />
+          <circle class="profitability-endpoint {end_class}" cx="{equity_coords[-1][0]:.2f}" cy="{equity_coords[-1][1]:.2f}" r="5.5" />
+          <text class="profitability-plot-label" x="{left:.2f}" y="17">EQUITY / CUMULATIVE RETURN</text>
+          {drawdown_markup}
+          {''.join(x_labels)}
+        </svg>
+        <div class="profitability-legend" aria-hidden="true">
+          <span><i class="equity"></i>Equity curve</span>
+          <span><i class="baseline"></i>Starting level</span>
+          <span><i class="drawdown"></i>Drawdown depth</span>
+        </div>
+      </div>
+"""
+
+
+def render_drawdown_svg(
+    drawdown: list[tuple[str, float]],
+    unit: str,
+    left: float,
+    width: float,
+    top: float,
+    bottom: float,
+) -> str:
+    if not drawdown:
+        return f"""
+          <rect class="profitability-drawdown-bg" x="{left:.2f}" y="{top:.2f}" width="{width:.2f}" height="{bottom - top:.2f}" />
+          <text class="profitability-axis-label" x="{left + width / 2:.2f}" y="{top + 35:.2f}" text-anchor="middle">Drawdown series unavailable</text>
+"""
+    depths = [-abs(value) for _, value in drawdown]
+    minimum = min(depths)
+    if math.isclose(minimum, 0.0):
+        minimum = -1.0
+    coords = chart_coordinates(depths, left, top, width, bottom - top, minimum, 0.0)
+    path = svg_path(coords)
+    area = f"M {coords[0][0]:.2f} {top:.2f} " + " ".join(
+        f"L {x:.2f} {y:.2f}" for x, y in coords
+    ) + f" L {coords[-1][0]:.2f} {top:.2f} Z"
+    return f"""
+          <rect class="profitability-drawdown-bg" x="{left:.2f}" y="{top:.2f}" width="{width:.2f}" height="{bottom - top:.2f}" />
+          <path class="profitability-drawdown-area" d="{area}" />
+          <path class="profitability-drawdown-line" d="{path}" />
+          <text class="profitability-plot-label" x="{left:.2f}" y="{top - 9:.2f}">DRAWDOWN</text>
+          <text class="profitability-axis-label" x="{left - 12:.2f}" y="{top + 4:.2f}" text-anchor="end">{escape(chart_axis_value(0.0, unit))}</text>
+          <text class="profitability-axis-label" x="{left - 12:.2f}" y="{bottom:.2f}" text-anchor="end">{escape(chart_axis_value(minimum, unit))}</text>
+"""
+
+
+def chart_coordinates(
+    values: list[float],
+    left: float,
+    top: float,
+    width: float,
+    height: float,
+    minimum: float,
+    maximum: float,
+) -> list[tuple[float, float]]:
+    return [
+        (
+            left + width * index / max(len(values) - 1, 1),
+            chart_y(value, top, height, minimum, maximum),
+        )
+        for index, value in enumerate(values)
+    ]
+
+
+def chart_y(value: float, top: float, height: float, minimum: float, maximum: float) -> float:
+    span = maximum - minimum or 1.0
+    return top + (maximum - value) / span * height
+
+
+def svg_path(points: list[tuple[float, float]]) -> str:
+    return " ".join(
+        f"{'M' if index == 0 else 'L'} {x:.2f} {y:.2f}"
+        for index, (x, y) in enumerate(points)
+    )
+
+
+def chart_axis_value(value: float, unit: str) -> str:
+    if unit == "$":
+        return f"${value:,.2f}"
+    if unit == "%":
+        return f"{value:,.2f}%"
+    return f"{value:,.2f}"
+
+
 def render_daily_return_chart(metrics: dict[str, Any]) -> str:
     if not metrics:
         return '<p class="muted">No daily distribution data yet.</p>'
@@ -1248,7 +1671,7 @@ def render_final_summary(summary: dict[str, Any]) -> str:
         ("SYSTEM STATUS", status),
         ("CORE METRICS", f"avg daily {percent(summary.get('avg_daily_return_pct'))} | PF {number(row.get('pf') if row else None)} | trades/day {number(summary.get('trades_per_day'))}"),
         ("EDGE CONFIDENCE", f"{display_label(summary.get('edge_confidence'))} | MC survival {percent(safe_dict(summary.get('monte_carlo')).get('survival_probability'))} | execution drag {percent(summary.get('total_execution_drag_pct'))}"),
-        ("TARGET VERDICT", f"100/day {display_label(summary.get('verdict_100_trades_per_day'))} | 5% daily {display_label(summary.get('verdict_5pct_daily_target'))} | 5-20/day {display_label(summary.get('verdict_5_to_20_trades_per_day'))}"),
+        ("TARGET VERDICT", f"100/day {display_label(summary.get('verdict_100_trades_per_day'))} | 5% daily {display_label(summary.get('verdict_5pct_daily_target'))} | 5-10/day {display_label(summary.get('verdict_5_to_20_trades_per_day'))}"),
         ("MAIN FAILURE", issue),
         ("BEST STRATEGY", strategy),
         ("FINAL CONCLUSION", conclusion),
@@ -1262,6 +1685,41 @@ def render_final_summary(summary: dict[str, Any]) -> str:
 
 
 def render_walk_forward_block(summary: dict[str, Any]) -> str:
+    parameter_selection = safe_dict(summary.get("parameter_selection_walk_forward"))
+    folds = parameter_selection.get("folds")
+    oos = safe_dict(parameter_selection.get("oos_summary")) or safe_dict(summary.get("oos_summary"))
+    if isinstance(folds, list) and folds:
+        body = "".join(
+            "<tr>"
+            f"<td>{escape(text_value(fold.get('fold')))}</td>"
+            f"<td>{escape(display_label(fold.get('selected_strategy')))}</td>"
+            f"<td>{escape(display_label(fold.get('selected_side')))}</td>"
+            f"<td>{whole(safe_dict(fold.get('train')).get('trades'))}</td>"
+            f"<td>{money(safe_dict(fold.get('train')).get('net'))}</td>"
+            f"<td>{number(safe_dict(fold.get('train')).get('pf'))}</td>"
+            f"<td>{whole(safe_dict(fold.get('oos')).get('trades'))}</td>"
+            f"<td>{money(safe_dict(fold.get('oos')).get('net'))}</td>"
+            f"<td>{number(safe_dict(fold.get('oos')).get('pf'))}</td>"
+            "</tr>"
+            for fold in folds
+            if isinstance(fold, dict)
+        )
+        return (
+            '<p class="muted">Expanding-window parameter selection with a holding-period embargo. '
+            'Each fold selects on prior data and contributes untouched out-of-sample trades only.</p>'
+            '<div class="walk-forward-summary">'
+            f'{metric_card("Stitched OOS trades", whole(oos.get("trades")), "neutral")}'
+            f'{metric_card("Stitched OOS net", money(oos.get("net")), profitability_value_class(oos.get("net"), 0.0))}'
+            f'{metric_card("Stitched OOS PF", number(oos.get("pf")), profitability_value_class(oos.get("pf"), 1.1))}'
+            f'{metric_card("OOS verdict", display_label(oos.get("verdict")), status_class({"verdict": oos.get("verdict")}))}'
+            '</div>'
+            '<div class="table-wrap compact"><table><thead><tr>'
+            '<th>Fold</th><th>Selected strategy</th><th>Side</th><th>Train trades</th><th>Train net</th><th>Train PF</th>'
+            '<th>OOS trades</th><th>OOS net</th><th>OOS PF</th>'
+            f'</tr></thead><tbody>{body}</tbody></table></div>'
+            f'<p class="muted">Fold failures: {whole(parameter_selection.get("fold_failures"))}. '
+            f'Overfit warning: {escape(text_value(oos.get("overfit_warning")))}</p>'
+        )
     row = safe_dict(summary.get("best_at_least_30"))
     if not row:
         return '<p class="muted">No 30+ trade candidate available for chronological split validation.</p>'
@@ -1478,8 +1936,8 @@ def timeframe_completion(records: list[SummaryRecord]) -> list[dict[str, str]]:
                 "run_status": "complete" if latest else "pending",
                 "candles": whole(summary.get("total_candles")),
                 "days": days(summary.get("approx_days")),
-                "start": text_value(summary.get("data_start") or summary.get("data_period_start")),
-                "end": text_value(summary.get("data_end") or summary.get("data_period_end")),
+                "start": uk_timestamp(summary.get("data_start") or summary.get("data_period_start")),
+                "end": uk_timestamp(summary.get("data_end") or summary.get("data_period_end")),
                 "coverage": display_label(summary.get("data_coverage")),
                 "latest_run": latest.run_label if latest else "n/a",
                 "verdict": text_value(summary.get("verdict")),
@@ -1770,9 +2228,19 @@ def format_list(value: Any) -> str:
 
 
 def short_timestamp(value: str) -> str:
-    if not value:
+    return uk_timestamp(value)
+
+
+def uk_timestamp(value: Any) -> str:
+    if value is None or value == "":
         return "n/a"
-    return value.replace("T", " ")[:19]
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except ValueError:
+        return str(value)
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(UK_TIMEZONE).strftime("%Y-%m-%d %H:%M:%S UK time")
 
 
 def counter_value(value: str) -> str:
