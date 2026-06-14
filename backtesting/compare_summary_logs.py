@@ -82,7 +82,7 @@ def filter_records_by_symbol(records: list[dict[str, Any]], symbol: str) -> list
     for record in records:
         summary = safe_dict(record.get("summary"))
         symbols = format_list(summary.get("symbols")).split(",")
-        if [item.strip() for item in symbols if item.strip() and item.strip() != "n/a"] == [symbol]:
+        if summary.get("btc_only") is True and [item.strip() for item in symbols if item.strip() and item.strip() != "n/a"] == [symbol]:
             filtered.append(record)
     return filtered
 
@@ -135,6 +135,8 @@ def print_table(records: list[dict[str, Any]], path: Path, ignored_count: int = 
         ("100/day", 16),
         ("5%day", 16),
         ("WF", 24),
+        ("OOS", 34),
+        ("Holdout", 34),
         ("SoftLate", 9),
         ("Total", 7),
         ("Pos", 5),
@@ -149,6 +151,9 @@ def print_table(records: list[dict[str, Any]], path: Path, ignored_count: int = 
     print(" ".join("-" * width for _, width in columns))
     for record in records:
         summary = safe_dict(record.get("summary"))
+        oos = safe_dict(summary.get("oos_summary")) or safe_dict(summary.get("latest_backtest_profitability"))
+        parameter_selection = safe_dict(summary.get("parameter_selection_walk_forward"))
+        holdout = safe_dict(summary.get("locked_holdout")) or safe_dict(parameter_selection.get("locked_holdout"))
         values = (
             truncate(str(record.get("run_label") or "n/a"), 24),
             truncate(str(record.get("logged_at_utc") or "n/a"), 19),
@@ -172,6 +177,8 @@ def print_table(records: list[dict[str, Any]], path: Path, ignored_count: int = 
             truncate(str(summary.get("verdict_100_trades_per_day") or "n/a"), 16),
             truncate(str(summary.get("verdict_5pct_daily_target") or "n/a"), 16),
             truncate(str(summary.get("walk_forward_verdict") or "n/a"), 24),
+            truncate(format_validation(oos), 34),
+            truncate(format_validation(holdout), 34),
             truncate(str(summary.get("reject_soft_late_momentum") or "n/a"), 9),
             str(summary.get("total_combinations", "n/a")),
             str(summary.get("positive_combinations", "n/a")),
@@ -199,6 +206,13 @@ def format_best(value: Any) -> str:
     net = format_money(row.get("net"))
     pf = format_number(row.get("pf"))
     return f"{symbol} {strategy} trades={trades} net={net} pf={pf}"
+
+
+def format_validation(row: dict[str, Any]) -> str:
+    if not row:
+        return "n/a"
+    strategy = row.get("strategy") or row.get("selected_strategy") or "n/a"
+    return f"{strategy} n={row.get('trades', 'n/a')} net={format_money(row.get('net'))} pf={format_number(row.get('pf'))}"
 
 
 def format_list(value: Any) -> str:

@@ -71,6 +71,17 @@ internal agent parameter sets, applies Binance futures-style fee defaults, and
 simulates liquidation risk when leverage is enabled. The suite runs 15m and 5m
 only. Run 1m separately with `--confirm-large-1m`.
 
+For the smaller, hypothesis-driven structural profile:
+
+```bat
+tools\run_btc_structural_validation.bat
+```
+
+This profile tests causal session ranges, completed higher-timeframe context,
+compression-to-expansion transitions, and session/regime interactions. It is
+backtesting-only and deliberately abstains when training data has no eligible
+positive candidate.
+
 For a direct 1m run:
 
 ```bat
@@ -97,9 +108,10 @@ Open:
 docs\index.html
 ```
 
-Dashboard metrics include diagnostic notional, calibration-only minimum expected net profit, trades/day, median daily return, profitable days, days above 5%, max daily drawdown, fee drag, walk-forward verdict, and compact best/worst candidates.
-The dashboard also includes a simple session-based frontend gate, system status,
-agent comparison, daily distribution visuals, and trades/day versus PF visuals.
+Dashboard metrics include diagnostic notional, trades/day, median daily return,
+profitable days, max daily drawdown, fee drag, stitched OOS results, a 20% replay
+holdout, calendar-month stability, block-bootstrap Monte Carlo, and OOS
+regime/session interactions. Full-sample leaderboards are labeled exploratory.
 
 ## Acceptance Criteria
 
@@ -112,6 +124,9 @@ A candidate is not considered promising unless it has:
 - Profit factor above 1.1 minimum, preferably above 1.2.
 - Acceptable max drawdown.
 - Positive chronological train/validation/test behavior.
+- A positive replay holdout and later truly unseen confirmation data.
+- Block-bootstrap robustness based on calendar daily returns, not IID trade shuffling.
+- Stable monthly expectancy rather than one isolated profitable period.
 - No dependence on one tiny cluster or one lucky trade.
 
 Current verdict labels include:
