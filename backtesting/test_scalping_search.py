@@ -11,11 +11,14 @@ import pandas as pd
 from backtesting.scalping_search import (
     FeatureArrays,
     SearchSpec,
+    SearchRow,
     SearchTrade,
     build_feature_arrays,
     daily_metrics,
     default_specs,
     simulate_trade,
+    select_train_candidate,
+    robustness_monte_carlo_for_trades,
 )
 from data.preprocess import DataPreprocessor
 
@@ -35,7 +38,11 @@ def feature_arrays(length: int = 100) -> FeatureArrays:
         trend_20_bps=np.full(length, 20.0), range_high_20=np.full(length, 101.0),
         range_low_20=np.full(length, 99.0), range_high_40=np.full(length, 102.0),
         range_low_40=np.full(length, 98.0), range_bps_20=np.full(length, 200.0),
-        range_bps_40=np.full(length, 400.0),
+        range_bps_40=np.full(length, 400.0), htf_trend_bps=np.full(length, 30.0),
+        htf_trend_direction=np.ones(length, dtype=np.int8), session_code=np.full(length, 2, dtype=np.int8),
+        prior_asia_high=np.full(length, 101.0), prior_asia_low=np.full(length, 99.0),
+        prior_london_high=np.full(length, 101.5), prior_london_low=np.full(length, 98.5),
+        compression_transition=np.zeros(length, dtype=bool), expansion_transition=np.zeros(length, dtype=bool),
     )
 
 
@@ -81,13 +88,26 @@ class ScalpingSearchInvariantTests(unittest.TestCase):
         for side in ("buy", "sell"):
             arrays = feature_arrays()
             arrays.open[61] = 100.0
-            arrays.high[61] = 102.0
-            arrays.low[61] = 98.0
+            arrays.high[62] = 102.0
+            arrays.low[62] = 98.0
             spec = SearchSpec("test", "momentum_burst", side, 20, 100.0, 100.0, 2)
             result = simulate_trade(60, spec, arrays, 100.0, 1.0, 0.0005, 0.0, 0.0, 0, 0, 0.004, 1.0)
             self.assertIsNotNone(result)
             assert result is not None
             self.assertEqual(result.exit_reason, "stop_loss_hit")
+
+    def test_entry_candle_extrema_are_not_used_after_delayed_fill(self) -> None:
+        arrays = feature_arrays()
+        arrays.open[61] = 100.0
+        arrays.high[61] = 105.0
+        arrays.low[61] = 95.0
+        arrays.high[62] = 100.2
+        arrays.low[62] = 99.8
+        spec = SearchSpec("test", "momentum_burst", "buy", 20, 100.0, 100.0, 2)
+        result = simulate_trade(60, spec, arrays, 100.0, 1.0, 0.0005, 0.0, 0.0, 0, 0, 0.004, 1.0)
+        self.assertIsNotNone(result)
+        assert result is not None
+        self.assertEqual(result.exit_reason, "max_horizon_exit")
 
     def test_daily_metrics_use_explicit_full_period(self) -> None:
         start = datetime(2026, 1, 1, tzinfo=timezone.utc).timestamp() * 1000
@@ -100,6 +120,27 @@ class ScalpingSearchInvariantTests(unittest.TestCase):
 
     def test_legacy_scalping_grid_still_builds(self) -> None:
         self.assertGreater(len(default_specs("1m")), 0)
+
+    def test_selector_abstains_when_all_training_candidates_lose(self) -> None:
+        losing = [trade(1_700_000_000_000 + i * 60_000, 1_700_000_030_000 + i * 60_000, -0.1) for i in range(25)]
+        for index, item in enumerate(losing):
+            item.entry_index = index + 1
+            item.exit_index = index + 2
+        row = SearchRow(
+            symbol="BTC/USDT", timeframe="1m", agent_name="test", strategy="test",
+            side="buy", target_bps=100.0, stop_bps=50.0, max_hold=10,
+            parameter_set="test", candles_tested=100, signals_considered=25,
+            trade_records=losing, source_spec=SearchSpec("test", "test", "buy", 20, 100.0, 50.0, 10),
+        )
+        self.assertIsNone(select_train_candidate([row], 100, 100.0))
+
+    def test_validated_monte_carlo_uses_calendar_blocks(self) -> None:
+        start = datetime(2026, 1, 1, tzinfo=timezone.utc).timestamp() * 1000
+        trades = [trade(start + i * 86_400_000, start + i * 86_400_000 + 60_000, 0.1) for i in range(30)]
+        result = robustness_monte_carlo_for_trades(trades, 100.0, start, start + 39 * 86_400_000, 50)
+        self.assertEqual(result["status"], "simulated")
+        self.assertEqual(result["block_size_days"], 5)
+        self.assertIn("robust_path_probability", result)
 
 
 if __name__ == "__main__":
