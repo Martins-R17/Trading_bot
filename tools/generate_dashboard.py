@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import re
 import subprocess
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -26,7 +27,7 @@ DEFAULT_SYMBOL_FILTER = "BTC/USDT"
 DAILY_TRADE_TARGET = 100.0
 DAILY_RETURN_TARGET_PCT = 5.0
 MIN_ACCEPTABLE_PF = 1.1
-REPORT_VERSION = "vNext Execution Simulator Build"
+REPORT_VERSION = "vNext Causal Structural Validation Build"
 UK_TIMEZONE = ZoneInfo("Europe/London")
 MAX_PROFITABILITY_POINTS = 180
 MAX_SERIES_SCAN_POINTS = 5000
@@ -196,7 +197,7 @@ def filter_symbol_records(records: list[SummaryRecord], symbol: str) -> list[Sum
     filtered: list[SummaryRecord] = []
     for record in records:
         symbols = normalize_list(record.summary.get("symbols"))
-        if symbols == [symbol]:
+        if symbols == [symbol] and record.summary.get("btc_only") is True:
             filtered.append(record)
     return filtered
 
@@ -224,9 +225,10 @@ def render_dashboard(
     latest_record = latest[-1] if latest else None
     latest_summary = latest_record.summary if latest_record else {}
     git_info = get_git_info()
-    best_overall = best_row(records, "best_overall")
-    best_30 = best_row(records, "best_at_least_30")
-    worst_overall = worst_row(records, "worst_overall")
+    validated = validated_rows(records)
+    best_overall = max(validated, key=lambda row: score_float(row.get("net"), missing=float("-inf")), default=None)
+    best_30 = max((row for row in validated if int(to_float(row.get("trades")) or 0) >= 30), key=lambda row: score_float(row.get("net"), missing=float("-inf")), default=None)
+    worst_overall = min(validated, key=lambda row: score_float(row.get("net"), missing=float("inf")), default=None)
     verdict_counts = count_values(records, "verdict")
     tf_rows = timeframe_rows(records)
     tf_completion = timeframe_completion(records)
@@ -373,17 +375,17 @@ def render_dashboard(
     </section>
 
     <section class="panel span-4">
-      <h2>Aggregate Best Overall</h2>
+      <h2>Validated OOS Best Overall</h2>
       {render_result_box(best_overall)}
     </section>
 
     <section class="panel span-4">
-      <h2>Aggregate Best With 30+ Trades</h2>
+      <h2>Validated OOS Best With 30+ Trades</h2>
       {render_result_box(best_30)}
     </section>
 
     <section class="panel span-4">
-      <h2>Aggregate Worst Overall</h2>
+      <h2>Validated OOS Worst Overall</h2>
       {render_result_box(worst_overall)}
     </section>
 
@@ -393,7 +395,7 @@ def render_dashboard(
     </section>
 
     <section class="panel span-6">
-      <h2>Strategy Leaderboard</h2>
+      <h2>Exploratory Full-Sample Leaderboard</h2>
       {render_strategy_leaderboard(leaderboard_rows)}
     </section>
 
@@ -420,6 +422,21 @@ def render_dashboard(
     <section class="panel span-6">
       <h2>Monte Carlo Robustness</h2>
       {render_monte_carlo_block(latest_summary)}
+    </section>
+
+    <section class="panel span-6">
+      <h2>Locked Replay Holdout</h2>
+      {render_locked_holdout_block(latest_summary)}
+    </section>
+
+    <section class="panel span-6">
+      <h2>Monthly OOS Stability</h2>
+      {render_monthly_stability_block(latest_summary)}
+    </section>
+
+    <section class="panel span-6">
+      <h2>OOS Regime x Session</h2>
+      {render_regime_session_block(latest_summary)}
     </section>
 
     <section class="panel span-6">
@@ -590,7 +607,7 @@ def render_update_banner(
       </div>
       <div class="update-item">
         <span>REPORT VERSION</span>
-        <strong>{escape(text_value(latest_summary.get("report_version") or REPORT_VERSION))}</strong>
+        <strong>{escape(REPORT_VERSION)}</strong>
       </div>
       <div class="update-item">
         <span>BTCUSDT ONLY</span>
@@ -659,7 +676,7 @@ def render_latest_row(record: SummaryRecord) -> str:
     summary = record.summary
     return f"""
             <tr>
-              <td>{escape(record.run_label)}</td>
+              <td>{escape(public_run_label(record))}</td>
               <td>{escape(short_timestamp(record.logged_at_utc))}</td>
               <td>{escape(format_list(summary.get("timeframes")))}</td>
               <td>{escape(text_value(summary.get("quality_profile") or summary.get("mode")))}</td>
@@ -689,6 +706,13 @@ def render_latest_row(record: SummaryRecord) -> str:
             </tr>"""
 
 
+def public_run_label(record: SummaryRecord) -> str:
+    label = record.run_label.strip()
+    if re.fullmatch(r"[A-Za-z0-9_.-]{1,96}", label):
+        return label
+    return f"run_{record.line_number}"
+
+
 def render_data_window(summary: dict[str, Any]) -> str:
     if not summary:
         return '<p class="muted">No BTC-only data profile has been logged yet.</p>'
@@ -707,7 +731,7 @@ def render_data_window(summary: dict[str, Any]) -> str:
 
 
 def render_quick_summary(summary: dict[str, Any]) -> str:
-    row = safe_dict(summary.get("best_at_least_30")) or safe_dict(summary.get("best_overall"))
+    row = validated_summary_row(summary)
     status = system_status(summary)
     pf = number(row.get("pf") if row else None)
     avg_day = percent(summary.get("avg_daily_return_pct"))
@@ -916,7 +940,7 @@ def target_card(
 
 
 def render_fee_drag_block(summary: dict[str, Any]) -> str:
-    row = safe_dict(summary.get("best_at_least_30")) or safe_dict(summary.get("best_overall"))
+    row = validated_summary_row(summary)
     if not row:
         return '<p class="muted">No realized candidate available yet.</p>'
     gross = abs(to_float(row.get("gross")) or 0.0)
@@ -971,6 +995,74 @@ def render_monte_carlo_block(summary: dict[str, Any]) -> str:
     return '<div class="stacked">' + "".join(
         f'<div><strong>{escape(label)}</strong><span>{escape(value)}</span></div>' for label, value in rows
     ) + "</div>"
+
+
+def render_locked_holdout_block(summary: dict[str, Any]) -> str:
+    parameter_selection = safe_dict(summary.get("parameter_selection_walk_forward"))
+    holdout = safe_dict(summary.get("locked_holdout")) or safe_dict(parameter_selection.get("locked_holdout"))
+    if not holdout:
+        return '<p class="muted">No locked replay holdout has been logged yet.</p>'
+    rows = [
+        ("Selected strategy", display_label(holdout.get("selected_strategy"))),
+        ("Direction", display_label(holdout.get("selected_side"))),
+        ("Trades", whole(holdout.get("trades"))),
+        ("Net after all costs", money(holdout.get("net"))),
+        ("Profit factor", number(holdout.get("pf"))),
+        ("Max drawdown", percent(holdout.get("max_drawdown_pct"))),
+        ("Pristine future confirmation", display_label(summary.get("final_holdout_pristine") if "final_holdout_pristine" in summary else parameter_selection.get("final_holdout_pristine"))),
+        ("Evidence note", text_value(summary.get("final_holdout_note") or parameter_selection.get("final_holdout_note") or holdout.get("confirmation_status"))),
+    ]
+    return '<div class="stacked">' + "".join(
+        f'<div><strong>{escape(label)}</strong><span>{escape(value)}</span></div>' for label, value in rows
+    ) + "</div>"
+
+
+def render_monthly_stability_block(summary: dict[str, Any]) -> str:
+    monthly = safe_dict(summary.get("monthly_stability"))
+    if not monthly:
+        monthly = safe_dict(safe_dict(summary.get("oos_summary")).get("monthly_stability"))
+    if not monthly:
+        return '<p class="muted">Monthly OOS stability is not available yet.</p>'
+    rows = [
+        ("Status", display_label(monthly.get("status"))),
+        ("Calendar months", whole(monthly.get("months"))),
+        ("Positive months", whole(monthly.get("positive_months"))),
+        ("Positive month rate", percent(monthly.get("positive_month_pct"))),
+        ("Monthly expectancy", percent(monthly.get("monthly_expectancy_pct"))),
+        ("Worst month", text_value(monthly.get("worst_month"))),
+        ("Worst month return", percent(monthly.get("worst_month_return_pct"))),
+        ("Monthly return volatility", percent(monthly.get("monthly_return_std_pct"))),
+    ]
+    return '<div class="stacked">' + "".join(
+        f'<div><strong>{escape(label)}</strong><span>{escape(value)}</span></div>' for label, value in rows
+    ) + "</div>"
+
+
+def render_regime_session_block(summary: dict[str, Any]) -> str:
+    rows = summary.get("regime_session_performance")
+    if not isinstance(rows, list) or not rows:
+        rows = safe_dict(summary.get("oos_summary")).get("regime_session_performance")
+    if not isinstance(rows, list) or not rows:
+        return '<p class="muted">No stitched OOS regime/session interactions are available.</p>'
+    body = ""
+    for raw in rows[:10]:
+        row = safe_dict(raw)
+        body += (
+            "<tr>"
+            f"<td>{escape(display_label(row.get('regime')))}</td>"
+            f"<td>{escape(display_label(row.get('session')))}</td>"
+            f"<td>{whole(row.get('trades'))}</td>"
+            f"<td>{money(row.get('net'))}</td>"
+            f"<td>{number(row.get('pf'))}</td>"
+            f"<td>{percent(row.get('max_drawdown_pct'))}</td>"
+            f"<td>{escape(display_label(row.get('sample_warning')))}</td>"
+            "</tr>"
+        )
+    return (
+        '<div class="table-wrap compact"><table><thead><tr>'
+        '<th>Regime</th><th>Session</th><th>Trades</th><th>Net</th><th>PF</th><th>DD</th><th>Evidence</th>'
+        f'</tr></thead><tbody>{body}</tbody></table></div>'
+    )
 
 
 def render_bigger_move_block(summary: dict[str, Any]) -> str:
@@ -1521,10 +1613,11 @@ def render_result_box(row: dict[str, Any] | None) -> str:
 
 
 def render_performance_table(summary: dict[str, Any]) -> str:
+    holdout = safe_dict(summary.get("locked_holdout")) or safe_dict(safe_dict(summary.get("parameter_selection_walk_forward")).get("locked_holdout"))
     rows = [
-        ("Best overall", safe_dict(summary.get("best_overall"))),
-        ("Best 30+", safe_dict(summary.get("best_at_least_30"))),
-        ("Worst overall", safe_dict(summary.get("worst_overall"))),
+        ("Stitched OOS", validated_summary_row(summary)),
+        ("Replay holdout", holdout),
+        ("Exploratory 30+", safe_dict(summary.get("best_at_least_30"))),
     ]
     body = ""
     for label, row in rows:
@@ -1598,7 +1691,7 @@ def render_momentum_block(summary: dict[str, Any]) -> str:
 
 
 def render_strategy_interpretation(summary: dict[str, Any]) -> str:
-    row = safe_dict(summary.get("best_at_least_30")) or safe_dict(summary.get("best_overall"))
+    row = validated_summary_row(summary)
     if not row:
         return '<p class="muted">No accepted BTC candidate has been logged yet.</p>'
     net = to_float(row.get("net")) or 0.0
@@ -1651,7 +1744,7 @@ def render_next_tasks(records: list[SummaryRecord]) -> str:
 
 
 def render_final_summary(summary: dict[str, Any]) -> str:
-    row = safe_dict(summary.get("best_at_least_30")) or safe_dict(summary.get("best_overall"))
+    row = validated_summary_row(summary)
     status = system_status(summary)
     issue = primary_failure_text(summary)
     strategy = "n/a"
@@ -1688,6 +1781,7 @@ def render_walk_forward_block(summary: dict[str, Any]) -> str:
     parameter_selection = safe_dict(summary.get("parameter_selection_walk_forward"))
     folds = parameter_selection.get("folds")
     oos = safe_dict(parameter_selection.get("oos_summary")) or safe_dict(summary.get("oos_summary"))
+    holdout = safe_dict(parameter_selection.get("locked_holdout")) or safe_dict(summary.get("locked_holdout"))
     if isinstance(folds, list) and folds:
         body = "".join(
             "<tr>"
@@ -1712,13 +1806,16 @@ def render_walk_forward_block(summary: dict[str, Any]) -> str:
             f'{metric_card("Stitched OOS net", money(oos.get("net")), profitability_value_class(oos.get("net"), 0.0))}'
             f'{metric_card("Stitched OOS PF", number(oos.get("pf")), profitability_value_class(oos.get("pf"), 1.1))}'
             f'{metric_card("OOS verdict", display_label(oos.get("verdict")), status_class({"verdict": oos.get("verdict")}))}'
+            f'{metric_card("Replay holdout net", money(holdout.get("net")), profitability_value_class(holdout.get("net"), 0.0))}'
+            f'{metric_card("Replay holdout PF", number(holdout.get("pf")), profitability_value_class(holdout.get("pf"), 1.1))}'
             '</div>'
             '<div class="table-wrap compact"><table><thead><tr>'
             '<th>Fold</th><th>Selected strategy</th><th>Side</th><th>Train trades</th><th>Train net</th><th>Train PF</th>'
             '<th>OOS trades</th><th>OOS net</th><th>OOS PF</th>'
             f'</tr></thead><tbody>{body}</tbody></table></div>'
             f'<p class="muted">Fold failures: {whole(parameter_selection.get("fold_failures"))}. '
-            f'Overfit warning: {escape(text_value(oos.get("overfit_warning")))}</p>'
+            f'Overfit warning: {escape(text_value(oos.get("overfit_warning")))}. '
+            f'{escape(text_value(parameter_selection.get("final_holdout_note")))}</p>'
         )
     row = safe_dict(summary.get("best_at_least_30"))
     if not row:
@@ -1885,6 +1982,23 @@ def best_row(records: list[SummaryRecord], field: str) -> dict[str, Any] | None:
     )
 
 
+def validated_summary_row(summary: dict[str, Any]) -> dict[str, Any]:
+    return safe_dict(summary.get("oos_summary")) or safe_dict(summary.get("latest_backtest_profitability"))
+
+
+def validated_rows(records: list[SummaryRecord]) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for record in records:
+        row = validated_summary_row(record.summary)
+        if not row:
+            continue
+        enriched = dict(row)
+        enriched.setdefault("symbol", (normalize_list(record.summary.get("symbols")) or ["BTC/USDT"])[0])
+        enriched.setdefault("timeframe", record.summary.get("timeframe") or (normalize_list(record.summary.get("timeframes")) or ["n/a"])[0])
+        rows.append(enriched)
+    return rows
+
+
 def worst_row(records: list[SummaryRecord], field: str) -> dict[str, Any] | None:
     rows = [row for row in (safe_dict(record.summary.get(field)) for record in records) if row]
     return min(
@@ -1905,8 +2019,10 @@ def timeframe_rows(records: list[SummaryRecord]) -> list[tuple[str, str, str, st
             buckets.setdefault(timeframe, []).append(record.summary)
     rows: list[tuple[str, str, str, str, str]] = []
     for timeframe, summaries in sorted(buckets.items()):
-        best = best_summary_row(summaries, "best_overall")
-        best_30 = best_summary_row(summaries, "best_at_least_30")
+        candidates = [validated_summary_row(summary) for summary in summaries]
+        candidates = [row for row in candidates if row]
+        best = max(candidates, key=lambda row: score_float(row.get("net"), missing=float("-inf")), default=None)
+        best_30 = max((row for row in candidates if int(to_float(row.get("trades")) or 0) >= 30), key=lambda row: score_float(row.get("net"), missing=float("-inf")), default=None)
         rows.append(
             (
                 timeframe,
