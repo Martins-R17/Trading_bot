@@ -24,6 +24,7 @@ import numpy as np
 import pandas as pd
 
 from data.preprocess import DataPreprocessor
+from backtesting.crypto_native import build_crypto_native_providers
 
 
 DEFAULT_SYMBOL = "BTC/USDT"
@@ -44,7 +45,7 @@ DEFAULT_RISK_PER_TRADE_PCT = 1.0
 MAX_SIMULATED_LEVERAGE = 10.0
 TARGET_TRADES_PER_DAY = 100.0
 LOW_FREQUENCY_TARGET_MIN_TRADES_PER_DAY = 5.0
-LOW_FREQUENCY_TARGET_MAX_TRADES_PER_DAY = 20.0
+LOW_FREQUENCY_TARGET_MAX_TRADES_PER_DAY = 10.0
 TARGET_AVG_DAILY_RETURN_PCT = 5.0
 TARGET_DAYS_ABOVE_5PCT_PCT = 75.0
 
@@ -84,6 +85,7 @@ class SearchSpec:
 @dataclass
 class SearchTrade:
     timestamp: float
+    exit_timestamp: float
     entry_index: int
     exit_index: int
     side: str
@@ -169,6 +171,8 @@ class SearchRow:
     best_session: dict[str, Any] | None = None
     monte_carlo: dict[str, Any] = field(default_factory=dict)
     edge_confidence: str = "LOW"
+    equity_curve: list[dict[str, Any]] = field(default_factory=list)
+    trade_records: list[SearchTrade] = field(default_factory=list, repr=False)
 
 
 @dataclass
@@ -233,6 +237,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-parameter-sets", type=int, default=0, help="0 means all default internal-agent specs.")
     parser.add_argument("--enable-macro-news-filter", action="store_true", default=env_bool("ENABLE_MACRO_NEWS_FILTER", False))
     parser.add_argument("--macro-news-cache", type=Path, default=Path(os.getenv("MACRO_NEWS_CACHE_PATH", "data/macro_news_cache.json")))
+    parser.add_argument("--crypto-native-cache-dir", type=Path, default=None, help="Optional local JSON cache directory; no network access is performed.")
     parser.add_argument("--save-summary-log", action="store_true")
     parser.add_argument("--summary-log-path", type=Path, default=DEFAULT_SUMMARY_LOG_PATH)
     parser.add_argument("--run-label", default="")
@@ -283,6 +288,7 @@ def run_search(args: argparse.Namespace) -> dict[str, Any]:
     if args.max_parameter_sets and args.max_parameter_sets > 0:
         specs = specs[: args.max_parameter_sets]
     macro_news = macro_news_status(args, arrays.timestamp)
+    crypto_native_status = build_crypto_native_providers(args.crypto_native_cache_dir).status_metadata()
 
     rows: list[SearchRow] = []
     total_candles_scanned = 0
@@ -318,12 +324,20 @@ def run_search(args: argparse.Namespace) -> dict[str, Any]:
     agent_comparison = build_agent_comparison(rows)
     strategy_leaderboard = [row_to_dict(row) for row in sorted(rows, key=leaderboard_key, reverse=True)[:20]]
     data_profile = build_data_profile(args.symbol, args.timeframe, arrays.timestamp)
-    target_verdicts = evaluate_targets(primary)
-    frequency_target = evaluate_frequency_target(primary, args.target_trades_per_day_min, args.target_trades_per_day_max)
+    parameter_selection_walk_forward = run_parameter_selection_walk_forward(
+        rows=rows,
+        timestamps=arrays.timestamp,
+        timeframe=args.timeframe,
+        diagnostic_notional=args.diagnostic_notional,
+        monte_carlo_iterations=args.monte_carlo_iterations,
+        folds=3,
+        embargo_minutes=args.max_hold_minutes,
+    )
+    oos_summary = parameter_selection_walk_forward["oos_summary"]
+    target_verdicts = evaluate_oos_targets(oos_summary)
+    frequency_target = evaluate_oos_frequency_target(oos_summary, args.target_trades_per_day_min, args.target_trades_per_day_max)
     primary_verdict = primary.verdict if primary else "too_few_trades"
-    summary_verdict = primary_verdict
-    if args.quality_profile == "high_quality" and frequency_target["verdict"] != "achieved":
-        summary_verdict = "not_profitable_frequency_target_not_met"
+    summary_verdict = str(oos_summary.get("verdict") or "not_profitable_out_of_sample")
     summary = {
         "summary_version": 8,
         "report_version": "vNext Execution Simulator Build",
@@ -331,7 +345,7 @@ def run_search(args: argparse.Namespace) -> dict[str, Any]:
         "quality_profile": args.quality_profile,
         "target_trades_per_day_min": args.target_trades_per_day_min,
         "target_trades_per_day_max": args.target_trades_per_day_max,
-        "reduced_frequency_goal": "5-20 trades/day" if args.quality_profile == "high_quality" else "100+ trades/day",
+        "reduced_frequency_goal": "5-10 trades/day; 1-3/day accepted only with stronger validated edge" if args.quality_profile == "high_quality" else "100+ trades/day",
         "symbols": [args.symbol],
         "timeframes": [args.timeframe],
         "timeframe": args.timeframe,
@@ -391,18 +405,18 @@ def run_search(args: argparse.Namespace) -> dict[str, Any]:
         "best_session": primary.best_session if primary else None,
         "agent_name": primary.agent_name if primary else "n/a",
         "strategy_name": primary.strategy if primary else "n/a",
-        "trades_per_day": primary.trades_per_day if primary else 0.0,
-        "avg_daily_return_pct": primary.avg_daily_return_pct if primary else 0.0,
-        "median_daily_return_pct": primary.median_daily_return_pct if primary else 0.0,
-        "days_profitable_pct": primary.days_profitable_pct if primary else 0.0,
-        "days_above_1pct": primary.days_above_1pct if primary else 0,
-        "days_above_1pct_pct": primary.days_above_1pct_pct if primary else 0.0,
-        "days_above_2pct": primary.days_above_2pct if primary else 0,
-        "days_above_2pct_pct": primary.days_above_2pct_pct if primary else 0.0,
-        "days_above_5pct": primary.days_above_5pct if primary else 0,
-        "days_above_5pct_pct": primary.days_above_5pct_pct if primary else 0.0,
-        "max_daily_drawdown_pct": primary.max_daily_drawdown_pct if primary else 0.0,
-        "fee_drag_pct": primary.fee_drag_pct if primary else 0.0,
+        "trades_per_day": oos_summary.get("trades_per_day", 0.0),
+        "avg_daily_return_pct": oos_summary.get("avg_daily_return_pct", 0.0),
+        "median_daily_return_pct": oos_summary.get("median_daily_return_pct", 0.0),
+        "days_profitable_pct": oos_summary.get("days_profitable_pct", 0.0),
+        "days_above_1pct": oos_summary.get("days_above_1pct", 0),
+        "days_above_1pct_pct": oos_summary.get("days_above_1pct_pct", 0.0),
+        "days_above_2pct": oos_summary.get("days_above_2pct", 0),
+        "days_above_2pct_pct": oos_summary.get("days_above_2pct_pct", 0.0),
+        "days_above_5pct": oos_summary.get("days_above_5pct", 0),
+        "days_above_5pct_pct": oos_summary.get("days_above_5pct_pct", 0.0),
+        "max_daily_drawdown_pct": oos_summary.get("max_drawdown_pct", 0.0),
+        "fee_drag_pct": oos_summary.get("fee_drag_pct", 0.0),
         "execution_latency_ms_avg": primary.execution_latency_ms_avg if primary else 0.0,
         "execution_latency_ms_p95": primary.execution_latency_ms_p95 if primary else 0.0,
         "spread_cost_pct": primary.spread_cost_pct if primary else 0.0,
@@ -412,11 +426,15 @@ def run_search(args: argparse.Namespace) -> dict[str, Any]:
         "total_execution_drag_pct": primary.total_execution_drag_pct if primary else 0.0,
         "liquidation_events": primary.liquidation_events if primary else 0,
         "monte_carlo": primary.monte_carlo if primary else {},
-        "edge_confidence": primary.edge_confidence if primary else "LOW",
+        "edge_confidence": oos_summary.get("edge_confidence", "LOW"),
+        "parameter_selection_walk_forward": parameter_selection_walk_forward,
+        "oos_summary": oos_summary,
+        "latest_backtest_profitability": oos_summary,
+        "latest_backtest_profitability_basis": "realized net PnL after futures fees, spread, slippage and latency-adjusted execution",
         "bigger_move_research_note": "Backtest-only search allows holds up to 60 minutes and 0.3%-2.0% target moves when needed to overcome fees.",
-        "crypto_native_data_hooks": crypto_native_hooks_status(),
-        "overfit_warning": primary.overfit_warning if primary else True,
-        "walk_forward_verdict": primary_verdict,
+        "crypto_native_data_hooks": crypto_native_status,
+        "overfit_warning": bool(oos_summary.get("overfit_warning", True)),
+        "walk_forward_verdict": str(oos_summary.get("verdict") or primary_verdict),
         "verdict": summary_verdict,
         "overfit_warning_reasons": primary.failure_reasons if primary else ["too_few_trades"],
         "target_a_100_trades_per_day": target_verdicts["target_a"],
@@ -427,7 +445,7 @@ def run_search(args: argparse.Namespace) -> dict[str, Any]:
         "verdict_5_to_20_trades_per_day": frequency_target["verdict"],
         "verdict_5pct_daily_target": target_verdicts["target_b"]["verdict"],
         "verdict_75pct_consistency_target": target_verdicts["target_c"]["verdict"],
-        "system_status": "PROFITABLE_CANDIDATE" if primary and primary.verdict in {"robust_candidate", "potentially_promising_needs_more_testing"} and frequency_target["verdict"] == "achieved" else "NOT_PROFITABLE",
+        "system_status": "PROFITABLE_CANDIDATE" if oos_summary.get("verdict") in {"robust_candidate", "potentially_promising_needs_more_testing"} else "NOT_PROFITABLE",
         "primary_failure": primary_failure(primary),
         "daily_scalping_metrics": daily_summary_dict(primary),
     }
@@ -478,10 +496,21 @@ def build_feature_arrays(df: pd.DataFrame) -> FeatureArrays:
     range_low_20 = low.shift(1).rolling(20).min()
     range_high_40 = high.shift(1).rolling(40).max()
     range_low_40 = low.shift(1).rolling(40).min()
-    atr_bps = (df["atr"] / close * 10_000).replace([np.inf, -np.inf], 0.0).fillna(0.0)
+    true_range = pd.concat(
+        [high - low, (high - close.shift(1)).abs(), (low - close.shift(1)).abs()],
+        axis=1,
+    ).max(axis=1)
+    causal_atr = true_range.rolling(14, min_periods=14).mean().fillna(0.0)
+    atr_bps = (causal_atr / close * 10_000).replace([np.inf, -np.inf], 0.0).fillna(0.0)
     atr_bps_array = atr_bps.to_numpy(dtype=float, copy=False)
-    atr_percentile = percentile_rank(atr_bps_array)
-    candle_range_atr_ratio = ((high - low) / df["atr"].replace(0.0, np.nan)).replace([np.inf, -np.inf], 0.0).fillna(0.0)
+    # Causal rolling rank: every value is ranked only against its current and
+    # preceding observations. A full-dataset percentile leaks future volatility.
+    atr_percentile = (
+        atr_bps.rolling(500, min_periods=100)
+        .rank(pct=True)
+        .fillna(0.0)
+        .to_numpy(dtype=float, copy=False)
+    )
     hour_utc = pd.to_datetime(df["timestamp"], unit="ms", utc=True, errors="coerce")
     if hour_utc.isna().all():
         hour_utc = pd.to_datetime(df["timestamp"], unit="s", utc=True, errors="coerce")
@@ -496,22 +525,22 @@ def build_feature_arrays(df: pd.DataFrame) -> FeatureArrays:
         ema_slow=df["ema_slow"].to_numpy(dtype=float, copy=False),
         macd_hist=df["macd_hist"].to_numpy(dtype=float, copy=False),
         rsi=df["rsi"].to_numpy(dtype=float, copy=False),
-        atr=df["atr"].to_numpy(dtype=float, copy=False),
+        atr=causal_atr.to_numpy(dtype=float, copy=False),
         atr_bps=atr_bps_array,
         atr_percentile=atr_percentile,
-        candle_range_atr_ratio=candle_range_atr_ratio.to_numpy(dtype=float, copy=False),
+        candle_range_atr_ratio=((high - low) / causal_atr.replace(0.0, np.nan)).replace([np.inf, -np.inf], 0.0).fillna(0.0).to_numpy(dtype=float, copy=False),
         hour_utc=hour_utc.dt.hour.fillna(12).to_numpy(dtype=int, copy=False),
         volume_ratio=volume_ratio.replace([np.inf, -np.inf], 1.0).fillna(1.0).to_numpy(dtype=float, copy=False),
         close_position=close_position.replace([np.inf, -np.inf], 0.5).fillna(0.5).to_numpy(dtype=float, copy=False),
-        vwap=vwap.bfill().fillna(close).to_numpy(dtype=float, copy=False),
+        vwap=vwap.fillna(close).to_numpy(dtype=float, copy=False),
         return_3_bps=(close / close.shift(3) - 1).replace([np.inf, -np.inf], 0.0).fillna(0.0).mul(10_000).to_numpy(dtype=float, copy=False),
         return_5_bps=(close / close.shift(5) - 1).replace([np.inf, -np.inf], 0.0).fillna(0.0).mul(10_000).to_numpy(dtype=float, copy=False),
         return_10_bps=(close / close.shift(10) - 1).replace([np.inf, -np.inf], 0.0).fillna(0.0).mul(10_000).to_numpy(dtype=float, copy=False),
         trend_20_bps=(close / close.shift(20) - 1).replace([np.inf, -np.inf], 0.0).fillna(0.0).mul(10_000).to_numpy(dtype=float, copy=False),
-        range_high_20=range_high_20.bfill().fillna(close).to_numpy(dtype=float, copy=False),
-        range_low_20=range_low_20.bfill().fillna(close).to_numpy(dtype=float, copy=False),
-        range_high_40=range_high_40.bfill().fillna(close).to_numpy(dtype=float, copy=False),
-        range_low_40=range_low_40.bfill().fillna(close).to_numpy(dtype=float, copy=False),
+        range_high_20=range_high_20.fillna(close).to_numpy(dtype=float, copy=False),
+        range_low_20=range_low_20.fillna(close).to_numpy(dtype=float, copy=False),
+        range_high_40=range_high_40.fillna(close).to_numpy(dtype=float, copy=False),
+        range_low_40=range_low_40.fillna(close).to_numpy(dtype=float, copy=False),
         range_bps_20=((range_high_20 - range_low_20) / close * 10_000).replace([np.inf, -np.inf], 0.0).fillna(0.0).to_numpy(dtype=float, copy=False),
         range_bps_40=((range_high_40 - range_low_40) / close * 10_000).replace([np.inf, -np.inf], 0.0).fillna(0.0).to_numpy(dtype=float, copy=False),
     )
@@ -588,6 +617,16 @@ def high_quality_specs(timeframe: str) -> list[SearchSpec]:
     volume_values = (1.25, 1.60)
     atr_percentiles = (0.65, 0.78)
     specs: list[SearchSpec] = []
+    specs.extend(
+        focused_research_specs(
+            hold_fast=hold_fast,
+            hold_slow=hold_slow,
+            min_spacing_fast=min_spacing_fast,
+            min_spacing_slow=min_spacing_slow,
+            min_atr_bps_values=min_atr_bps_values,
+            min_trend_values=min_trend_values,
+        )
+    )
 
     for target_bps, stop_bps, ret_bps, volume_ratio, atr_pct in product(
         target_values,
@@ -881,6 +920,83 @@ def high_quality_specs(timeframe: str) -> list[SearchSpec]:
     return interleave_by_agent(specs)
 
 
+def focused_research_specs(
+    hold_fast: int,
+    hold_slow: int,
+    min_spacing_fast: int,
+    min_spacing_slow: int,
+    min_atr_bps_values: tuple[float, ...],
+    min_trend_values: tuple[float, ...],
+) -> list[SearchSpec]:
+    """Small hypothesis-driven grids for compression, pullback, reversal and session setups."""
+    specs: list[SearchSpec] = []
+    for target_bps, stop_bps, atr_pct in product((50.0, 75.0, 100.0, 150.0), (25.0, 35.0, 50.0), (0.60, 0.72)):
+        if target_bps < stop_bps * 1.5:
+            continue
+        for side in ("buy", "sell"):
+            specs.append(SearchSpec(
+                "agent_1_momentum_breakout", "quality_compression_breakout", side, 20,
+                target_bps, stop_bps, hold_slow, 0.0, 1.20, min_atr_bps_values[0], 3.0,
+                0.65 if side == "buy" else 0.05, 0.95 if side == "buy" else 0.35,
+                54.0 if side == "buy" else 28.0, 72.0 if side == "buy" else 46.0, 0.20,
+                min_spacing=min_spacing_slow, min_atr_percentile=atr_pct,
+                min_trend_bps=min_trend_values[0], avoid_mid_rsi=True,
+                max_extension_bps=target_bps * 0.75, max_candle_atr_ratio=2.2,
+                avoid_low_liquidity_hours=True, atr_stop_multiplier=1.0,
+                atr_target_multiplier=2.2, trailing_stop_bps=max(stop_bps * 0.9, 24.0),
+            ))
+
+    for target_bps, stop_bps, atr_pct in product((30.0, 50.0, 75.0, 100.0), (20.0, 25.0, 35.0), (0.55, 0.70)):
+        if target_bps < stop_bps * 1.4:
+            continue
+        for side in ("buy", "sell"):
+            specs.append(SearchSpec(
+                "agent_2_microstructure_scalping", "quality_trend_pullback", side, 20,
+                target_bps, stop_bps, hold_fast, 0.0, 0.75, min_atr_bps_values[0], 3.0,
+                0.50 if side == "buy" else 0.10, 0.90 if side == "buy" else 0.50,
+                48.0 if side == "buy" else 34.0, 66.0 if side == "buy" else 52.0, 0.0,
+                vwap_side_required=True, min_spacing=min_spacing_fast,
+                min_atr_percentile=atr_pct, min_trend_bps=min_trend_values[0],
+                avoid_mid_rsi=True, max_extension_bps=target_bps * 0.60,
+                max_candle_atr_ratio=1.35, avoid_low_liquidity_hours=True,
+                atr_stop_multiplier=1.0, atr_target_multiplier=1.8,
+                trailing_stop_bps=max(stop_bps * 0.8, 18.0),
+            ))
+
+    for target_bps, stop_bps, atr_pct in product((30.0, 50.0, 75.0), (20.0, 25.0, 35.0), (0.70, 0.82)):
+        if target_bps < stop_bps * 1.35:
+            continue
+        for side in ("buy", "sell"):
+            specs.append(SearchSpec(
+                "agent_3_adaptive_experimental", "quality_failed_breakout_reversal", side, 20,
+                target_bps, stop_bps, hold_fast, 0.0, 1.10, min_atr_bps_values[0], 0.0,
+                0.65 if side == "buy" else 0.05, 0.95 if side == "buy" else 0.35,
+                30.0 if side == "buy" else 52.0, 48.0 if side == "buy" else 70.0, 0.0,
+                min_spacing=min_spacing_fast, min_atr_percentile=atr_pct,
+                max_extension_bps=target_bps, max_candle_atr_ratio=2.2,
+                avoid_low_liquidity_hours=True, atr_stop_multiplier=1.1,
+                atr_target_multiplier=1.8, trailing_stop_bps=max(stop_bps * 0.85, 18.0),
+            ))
+
+    for target_bps, stop_bps in product((50.0, 75.0, 100.0), (25.0, 35.0)):
+        if target_bps < stop_bps * 1.5:
+            continue
+        for side in ("buy", "sell"):
+            specs.append(SearchSpec(
+                "agent_1_momentum_breakout", "quality_session_breakout", side, 40,
+                target_bps, stop_bps, hold_slow, 0.0, 1.25, min_atr_bps_values[1], 4.0,
+                0.60 if side == "buy" else 0.05, 0.95 if side == "buy" else 0.40,
+                54.0 if side == "buy" else 28.0, 72.0 if side == "buy" else 46.0, 0.20,
+                min_range_bps=target_bps * 0.55, min_spacing=min_spacing_slow,
+                min_atr_percentile=0.72, min_trend_bps=min_trend_values[0],
+                avoid_mid_rsi=True, max_extension_bps=target_bps,
+                max_candle_atr_ratio=1.8, avoid_low_liquidity_hours=True,
+                atr_stop_multiplier=1.0, atr_target_multiplier=2.1,
+                trailing_stop_bps=max(stop_bps * 0.9, 22.0),
+            ))
+    return specs
+
+
 def interleave_by_agent(specs: list[SearchSpec]) -> list[SearchSpec]:
     grouped: dict[str, list[SearchSpec]] = defaultdict(list)
     for spec in specs:
@@ -925,12 +1041,16 @@ def evaluate_spec(
     valid = np.arange(len(arrays.close)) >= max(spec.lookback, 60)
     valid &= np.arange(len(arrays.close)) < len(arrays.close) - max_hold - 1
     indices = np.flatnonzero(mask & valid)
-    if spec.min_spacing > 1 and len(indices) > 1:
-        indices = spaced_indices(indices, spec.min_spacing)
 
     trades: list[SearchTrade] = []
     missed_fills = 0
+    signals_considered = 0
+    last_exit_index = -1
+    last_filled_signal = -10**12
     for index in indices:
+        if index + 1 <= last_exit_index or index - last_filled_signal < spec.min_spacing:
+            continue
+        signals_considered += 1
         trade = simulate_trade(
             index=int(index),
             spec=spec,
@@ -949,13 +1069,15 @@ def evaluate_spec(
             missed_fills += 1
             continue
         trades.append(trade)
+        last_exit_index = trade.exit_index
+        last_filled_signal = int(index)
     return summarize_trades(
         symbol=symbol,
         timeframe=timeframe,
         spec=spec,
         trades=trades,
         candles_tested=max(int(len(arrays.close) - max(spec.lookback, 60)), 0),
-        signals_considered=int(len(indices)),
+        signals_considered=signals_considered,
         missed_fills=missed_fills,
         diagnostic_notional=diagnostic_notional,
         leverage=leverage,
@@ -963,6 +1085,8 @@ def evaluate_spec(
         quality_profile=quality_profile,
         target_trades_per_day_min=target_trades_per_day_min,
         target_trades_per_day_max=target_trades_per_day_max,
+        data_start_timestamp=float(arrays.timestamp[0]) if len(arrays.timestamp) else 0.0,
+        data_end_timestamp=float(arrays.timestamp[-1]) if len(arrays.timestamp) else 0.0,
     )
 
 
@@ -986,12 +1110,49 @@ def signal_mask(spec: SearchSpec, arrays: FeatureArrays) -> np.ndarray:
         liquidity_hours = (arrays.hour_utc >= 6) & (arrays.hour_utc <= 21)
     base_filters = trend & macd & rsi & volume & atr & ema_gap & close_position & trend_floor & extension & candle_structure & liquidity_hours
 
-    if spec.strategy_name in {"range_breakout", "quality_range_breakout"}:
+    if spec.strategy_name in {"range_breakout", "quality_range_breakout", "quality_session_breakout"}:
         range_high = arrays.range_high_20 if spec.lookback <= 20 else arrays.range_high_40
         range_low = arrays.range_low_20 if spec.lookback <= 20 else arrays.range_low_40
         range_bps = arrays.range_bps_20 if spec.lookback <= 20 else arrays.range_bps_40
         breakout = (close > range_high) if spec.side == "buy" else (close < range_low)
-        return base_filters & breakout & (range_bps >= spec.min_range_bps)
+        session_ok = np.ones_like(close, dtype=bool)
+        if spec.strategy_name == "quality_session_breakout":
+            session_ok = (arrays.hour_utc >= 7) & (arrays.hour_utc <= 15)
+        return base_filters & breakout & (range_bps >= spec.min_range_bps) & session_ok
+
+    if spec.strategy_name == "quality_compression_breakout":
+        range_to_atr = arrays.range_bps_20 / np.maximum(arrays.atr_bps, 1e-9)
+        breakout = (close > arrays.range_high_20) if spec.side == "buy" else (close < arrays.range_low_20)
+        expansion = (arrays.candle_range_atr_ratio >= 1.0) & (arrays.candle_range_atr_ratio <= spec.max_candle_atr_ratio)
+        return base_filters & breakout & expansion & (range_to_atr <= 4.5)
+
+    if spec.strategy_name == "quality_failed_breakout_reversal":
+        if spec.side == "buy":
+            sweep = (arrays.low < arrays.range_low_20) & (close > arrays.range_low_20)
+            rejection = arrays.close_position >= spec.min_close_position
+            macd_ok = arrays.macd_hist >= 0
+        else:
+            sweep = (arrays.high > arrays.range_high_20) & (close < arrays.range_high_20)
+            rejection = arrays.close_position <= spec.max_close_position
+            macd_ok = arrays.macd_hist <= 0
+        rejection_filters = rsi & volume & atr & rejection & candle_structure & liquidity_hours & macd_ok
+        return rejection_filters & sweep & (arrays.candle_range_atr_ratio >= 1.2)
+
+    if spec.strategy_name == "quality_trend_pullback":
+        previous_low = np.roll(arrays.low, 1)
+        previous_high = np.roll(arrays.high, 1)
+        previous_close = np.roll(arrays.close, 1)
+        previous_ema_fast = np.roll(arrays.ema_fast, 1)
+        previous_ema_slow = np.roll(arrays.ema_slow, 1)
+        if spec.side == "buy":
+            pullback = (previous_low <= previous_ema_fast) & (previous_close >= previous_ema_slow)
+            reclaim = (close > arrays.ema_fast) & (close > previous_high)
+        else:
+            pullback = (previous_high >= previous_ema_fast) & (previous_close <= previous_ema_slow)
+            reclaim = (close < arrays.ema_fast) & (close < previous_low)
+        pullback[0] = False
+        near_vwap = np.abs(close - arrays.vwap) / np.maximum(close, 1e-9) * 10_000 <= 20.0
+        return base_filters & pullback & reclaim & near_vwap
 
     returns = arrays.return_3_bps if spec.strategy_name in {"ema_vwap_continuation", "quality_vwap_pullback"} else arrays.return_5_bps
     momentum = returns * side_direction >= spec.min_return_bps
@@ -1021,6 +1182,12 @@ def classify_market_regime(arrays: FeatureArrays, index: int) -> str:
     atr_pct = safe_float_at(arrays.atr_percentile, index)
     trend_abs = abs(safe_float_at(arrays.trend_20_bps, index))
     range_bps = safe_float_at(arrays.range_bps_20, index)
+    range_bps_40 = safe_float_at(arrays.range_bps_40, index)
+    compression_ratio = range_bps / max(range_bps_40, 1e-9)
+    if compression_ratio <= 0.55:
+        return "compression"
+    if atr_pct >= 0.80 and safe_float_at(arrays.candle_range_atr_ratio, index) >= 1.20:
+        return "expansion"
     if atr_pct >= 0.80:
         return "high_volatility"
     if atr_pct <= 0.35:
@@ -1074,19 +1241,24 @@ def simulate_trade(
     risk_per_trade_pct: float,
 ) -> SearchTrade | None:
     direction = 1 if spec.side == "buy" else -1
-    entry = float(arrays.close[index])
+    entry_index = index + 1
+    if entry_index >= len(arrays.close):
+        return None
+    # The completed signal candle cannot be filled at its own close. Execute at
+    # the next available candle open, then apply conservative adverse latency.
+    entry = float(arrays.open[entry_index])
     atr_bps = float(arrays.atr_bps[index])
     atr_pct = safe_float_at(arrays.atr_percentile, index)
     candle_atr = safe_float_at(arrays.candle_range_atr_ratio, index)
     volume_ratio = safe_float_at(arrays.volume_ratio, index, 1.0)
-    latency_ms = execution_latency_ms(index, latency_min_ms, latency_max_ms)
+    latency_ms = execution_latency_ms(entry_index, latency_min_ms, latency_max_ms)
     missed_rate = min(0.08, 0.003 + atr_pct * 0.012 + max(candle_atr - 1.0, 0.0) * 0.006 + max(1.05 - volume_ratio, 0.0) * 0.01)
-    if deterministic_random(index, 2.9) < missed_rate:
+    if deterministic_random(entry_index, 2.9) < missed_rate:
         return None
     partial_rate = min(0.18, 0.015 + atr_pct * 0.025 + max(candle_atr - 1.2, 0.0) * 0.012)
     partial_fill_ratio = 1.0
-    if deterministic_random(index, 3.9) < partial_rate:
-        partial_fill_ratio = 0.55 + deterministic_random(index, 4.9) * 0.40
+    if deterministic_random(entry_index, 3.9) < partial_rate:
+        partial_fill_ratio = 0.55 + deterministic_random(entry_index, 4.9) * 0.40
     latency_price_bps = min(8.0, atr_bps * 0.010 + candle_atr * 0.20 + latency_ms / max(latency_max_ms, 1) * 0.35)
     entry = entry * (1 + direction * latency_price_bps / 10_000)
     target_bps = spec.target_bps
@@ -1104,49 +1276,51 @@ def simulate_trade(
     position_notional = min(max_position_notional, risk_budget / stop_fraction) if risk_budget > 0 else diagnostic_notional
     position_notional = max(position_notional, 0.0) * partial_fill_ratio
     liq = liquidation_price(entry, spec.side, leverage, maintenance_margin_rate)
-    exit_price = float(arrays.close[min(index + spec.max_hold, len(arrays.close) - 1)])
-    exit_index = min(index + spec.max_hold, len(arrays.close) - 1)
+    last_exit_index = min(entry_index + spec.max_hold - 1, len(arrays.close) - 1)
+    exit_price = float(arrays.close[last_exit_index])
+    exit_index = last_exit_index
     exit_reason = "max_horizon_exit"
     liquidation_event = False
     best_price = entry
     trailing_bps = spec.trailing_stop_bps
-    for offset in range(1, spec.max_hold + 1):
-        cursor = index + offset
+    for offset in range(spec.max_hold):
+        cursor = entry_index + offset
         if cursor >= len(arrays.close):
             break
+        candle_open = float(arrays.open[cursor])
         high = float(arrays.high[cursor])
         low = float(arrays.low[cursor])
         if spec.side == "buy":
-            best_price = max(best_price, high)
-            if trailing_bps > 0 and best_price > entry:
-                stop = max(stop, best_price * (1 - trailing_bps / 10_000))
-            if leverage > 1.0 and low <= liq:
-                exit_price = liq
+            if leverage > 1.0 and (candle_open <= liq or low <= liq):
+                exit_price = min(candle_open, liq) if candle_open <= liq else liq
                 exit_reason = "liquidation_event"
                 liquidation_event = True
-            elif low <= stop:
-                exit_price = stop
+            elif candle_open <= stop or low <= stop:
+                exit_price = min(candle_open, stop) if candle_open <= stop else stop
                 exit_reason = "trailing_stop_hit" if stop > initial_stop else "stop_loss_hit"
-            elif high >= target:
+            elif candle_open >= target or high >= target:
                 exit_price = target
                 exit_reason = "take_profit_hit"
             else:
+                best_price = max(best_price, high)
+                if trailing_bps > 0 and best_price > entry:
+                    stop = max(stop, best_price * (1 - trailing_bps / 10_000))
                 continue
         else:
-            best_price = min(best_price, low)
-            if trailing_bps > 0 and best_price < entry:
-                stop = min(stop, best_price * (1 + trailing_bps / 10_000))
-            if leverage > 1.0 and high >= liq:
-                exit_price = liq
+            if leverage > 1.0 and (candle_open >= liq or high >= liq):
+                exit_price = max(candle_open, liq) if candle_open >= liq else liq
                 exit_reason = "liquidation_event"
                 liquidation_event = True
-            elif high >= stop:
-                exit_price = stop
+            elif candle_open >= stop or high >= stop:
+                exit_price = max(candle_open, stop) if candle_open >= stop else stop
                 exit_reason = "trailing_stop_hit" if stop < initial_stop else "stop_loss_hit"
-            elif low <= target:
+            elif candle_open <= target or low <= target:
                 exit_price = target
                 exit_reason = "take_profit_hit"
             else:
+                best_price = min(best_price, low)
+                if trailing_bps > 0 and best_price < entry:
+                    stop = min(stop, best_price * (1 + trailing_bps / 10_000))
                 continue
         exit_index = cursor
         break
@@ -1171,8 +1345,9 @@ def simulate_trade(
     spread_costs = (position_notional + exit_notional) * effective_spread_bps / 20_000
     costs = fees + slippage + spread_costs
     return SearchTrade(
-        timestamp=float(arrays.timestamp[index]),
-        entry_index=index,
+        timestamp=float(arrays.timestamp[entry_index]),
+        exit_timestamp=float(arrays.timestamp[exit_index]),
+        entry_index=entry_index,
         exit_index=exit_index,
         side=spec.side,
         entry_price=entry,
@@ -1220,6 +1395,8 @@ def summarize_trades(
     quality_profile: str,
     target_trades_per_day_min: float,
     target_trades_per_day_max: float,
+    data_start_timestamp: float,
+    data_end_timestamp: float,
 ) -> SearchRow:
     net_values = [trade.net_pnl for trade in trades]
     gross_profit = sum(value for value in net_values if value > 0)
@@ -1227,7 +1404,7 @@ def summarize_trades(
     pf = None if gross_loss <= 0 and gross_profit <= 0 else (float("inf") if gross_loss <= 0 else gross_profit / gross_loss)
     wins = sum(1 for value in net_values if value > 0)
     losses = len(trades) - wins
-    daily = daily_metrics(trades, diagnostic_notional)
+    daily = daily_metrics(trades, diagnostic_notional, data_start_timestamp, data_end_timestamp)
     walk_forward = walk_forward_splits(trades)
     max_dd_pct = max_drawdown(net_values) / max(diagnostic_notional, 1e-9) * 100
     overfit_warning = len(trades) < 30 or any(split["net"] <= 0 or split["pf"] is None or split["pf"] <= 1.0 for split in walk_forward if split["trades"] > 0)
@@ -1317,17 +1494,30 @@ def summarize_trades(
         best_session=best_group_performance(session_performance),
         monte_carlo=monte_carlo,
         edge_confidence=edge_confidence,
+        equity_curve=equity_curve_points(trades, diagnostic_notional),
+        trade_records=list(trades),
     )
 
 
-def daily_metrics(trades: list[SearchTrade], diagnostic_notional: float) -> dict[str, Any]:
+def daily_metrics(
+    trades: list[SearchTrade],
+    diagnostic_notional: float,
+    data_start_timestamp: float,
+    data_end_timestamp: float,
+) -> dict[str, Any]:
     if not trades:
-        return empty_daily_metrics()
+        metrics = empty_daily_metrics()
+        if data_start_timestamp and data_end_timestamp:
+            start_day = datetime.fromisoformat(day_key(data_start_timestamp))
+            end_day = datetime.fromisoformat(day_key(data_end_timestamp))
+            calendar_days = max((end_day - start_day).days + 1, 1)
+            metrics.update({"calendar_days": calendar_days, "active_trade_days": 0, "zero_trade_days": calendar_days})
+        return metrics
     by_day: dict[str, list[SearchTrade]] = defaultdict(list)
     for trade in trades:
-        by_day[day_key(trade.timestamp)].append(trade)
-    first_day = min(by_day)
-    last_day = max(by_day)
+        by_day[day_key(trade.exit_timestamp)].append(trade)
+    first_day = day_key(data_start_timestamp) if data_start_timestamp else min(by_day)
+    last_day = day_key(data_end_timestamp) if data_end_timestamp else max(by_day)
     calendar_days = max((datetime.fromisoformat(last_day) - datetime.fromisoformat(first_day)).days + 1, len(by_day))
     daily_returns: list[float] = []
     daily_drawdowns: list[float] = []
@@ -1341,6 +1531,9 @@ def daily_metrics(trades: list[SearchTrade], diagnostic_notional: float) -> dict
     calendar_returns = daily_returns + [0.0] * zero_days
     return {
         "basis": "full_data_period_including_zero_trade_days",
+        "calendar_days": 0,
+        "active_trade_days": 0,
+        "zero_trade_days": 0,
         "calendar_days": calendar_days,
         "active_trade_days": len(daily_returns),
         "zero_trade_days": zero_days,
@@ -1400,6 +1593,184 @@ def percentile(values: list[float], pct: float) -> float:
         return float(ordered[lower])
     weight = position - lower
     return float(ordered[lower] * (1 - weight) + ordered[upper] * weight)
+
+
+def run_parameter_selection_walk_forward(
+    rows: list[SearchRow],
+    timestamps: np.ndarray,
+    timeframe: str,
+    diagnostic_notional: float,
+    monte_carlo_iterations: int,
+    folds: int = 3,
+    embargo_minutes: int = 60,
+) -> dict[str, Any]:
+    """Select parameters on expanding training windows and stitch untouched OOS trades."""
+    if not rows or len(timestamps) < 300 or folds <= 0:
+        return {"method": "expanding_train_stitched_oos", "folds": [], "oos_summary": empty_oos_summary()}
+    candle_count = len(timestamps)
+    initial_train_end = candle_count // 2
+    fold_size = max((candle_count - initial_train_end) // folds, 1)
+    embargo_candles = max(int(math.ceil(embargo_minutes / TIMEFRAME_MINUTES[timeframe])), 1)
+    fold_results: list[dict[str, Any]] = []
+    stitched_oos: list[SearchTrade] = []
+    selected_names: list[str] = []
+    for fold_index in range(folds):
+        train_end = initial_train_end + fold_index * fold_size
+        oos_start = min(train_end + embargo_candles, candle_count - 1)
+        oos_end = candle_count if fold_index == folds - 1 else min(initial_train_end + (fold_index + 1) * fold_size, candle_count)
+        if oos_start >= oos_end:
+            continue
+        selected = max(rows, key=lambda row: train_selection_key(row.trade_records, train_end, diagnostic_notional))
+        train_trades = [trade for trade in selected.trade_records if trade.exit_index < train_end]
+        oos_trades = [
+            trade for trade in selected.trade_records
+            if trade.entry_index >= oos_start and trade.exit_index < oos_end
+        ]
+        stitched_oos.extend(oos_trades)
+        selected_names.append(f"{selected.strategy}:{selected.side}")
+        fold_results.append({
+            "fold": fold_index + 1,
+            "train_start": timestamp_to_utc(float(timestamps[0])),
+            "train_end": timestamp_to_utc(float(timestamps[train_end - 1])),
+            "oos_start": timestamp_to_utc(float(timestamps[oos_start])),
+            "oos_end": timestamp_to_utc(float(timestamps[oos_end - 1])),
+            "embargo_candles": embargo_candles,
+            "selected_agent": selected.agent_name,
+            "selected_strategy": selected.strategy,
+            "selected_side": selected.side,
+            "selected_parameter_set": selected.parameter_set,
+            "train": compact_trade_stats(train_trades, diagnostic_notional),
+            "oos": compact_trade_stats(oos_trades, diagnostic_notional),
+        })
+    if not fold_results:
+        return {"method": "expanding_train_stitched_oos", "folds": [], "oos_summary": empty_oos_summary()}
+    first_oos_index = min(
+        max(initial_train_end + embargo_candles, 0),
+        candle_count - 1,
+    )
+    oos = compact_trade_stats(
+        stitched_oos,
+        diagnostic_notional,
+        float(timestamps[first_oos_index]),
+        float(timestamps[-1]),
+    )
+    oos["strategy"] = selected_names[0].split(":", 1)[0] if len(set(selected_names)) == 1 else "walk_forward_selected_portfolio"
+    oos["strategy_name"] = oos["strategy"]
+    oos["side"] = selected_names[0].split(":", 1)[1] if len(set(selected_names)) == 1 else "mixed"
+    oos["timeframe"] = timeframe
+    oos["selected_parameter_sets"] = [fold["selected_parameter_set"] for fold in fold_results]
+    oos["walk_forward_folds"] = len(fold_results)
+    oos["monte_carlo"] = monte_carlo_summary([trade.net_pnl for trade in stitched_oos], diagnostic_notional, monte_carlo_iterations)
+    fold_failures = sum(1 for fold in fold_results if float(fold["oos"].get("net") or 0.0) <= 0)
+    pf_value = oos.get("pf")
+    oos["overfit_warning"] = bool(fold_failures > 0 or oos["net"] <= 0 or pf_value is None or pf_value <= 1.1)
+    oos["verdict"] = oos_verdict(oos, fold_failures)
+    oos["edge_confidence"] = oos_edge_confidence(oos, fold_failures)
+    oos["equity_curve"] = equity_curve_points(stitched_oos, diagnostic_notional)
+    oos["equity_curve_basis"] = "stitched walk-forward OOS realized net PnL after all modeled execution costs"
+    return {
+        "method": "expanding_train_parameter_selection_with_embargo_and_stitched_oos",
+        "selection_uses_future_data": False,
+        "folds": fold_results,
+        "fold_failures": fold_failures,
+        "oos_summary": oos,
+    }
+
+
+def train_selection_key(trades: list[SearchTrade], train_end_index: int, diagnostic_notional: float) -> tuple[float, ...]:
+    train = [trade for trade in trades if trade.exit_index < train_end_index]
+    stats = compact_trade_stats(train, diagnostic_notional)
+    pf_value = float(stats["pf"] or 0.0)
+    return (
+        1.0 if stats["trades"] >= 20 else 0.0,
+        1.0 if stats["net"] > 0 and pf_value > 1.0 else 0.0,
+        min(pf_value, 10.0),
+        float(stats["net"]),
+        -float(stats["max_drawdown_pct"]),
+        float(stats["trades"]),
+    )
+
+
+def compact_trade_stats(
+    trades: list[SearchTrade],
+    diagnostic_notional: float,
+    period_start_timestamp: float | None = None,
+    period_end_timestamp: float | None = None,
+) -> dict[str, Any]:
+    values = [trade.net_pnl for trade in trades]
+    profit = sum(value for value in values if value > 0)
+    loss = abs(sum(value for value in values if value < 0))
+    pf = None if not values else (float("inf") if loss <= 0 and profit > 0 else (profit / loss if loss > 0 else None))
+    start = period_start_timestamp or (min((trade.timestamp for trade in trades), default=0.0))
+    end = period_end_timestamp or (max((trade.exit_timestamp for trade in trades), default=start))
+    daily = daily_metrics(trades, diagnostic_notional, start, end)
+    drawdown = max_drawdown(values)
+    return {
+        "trades": len(trades),
+        "wins": sum(1 for value in values if value > 0),
+        "losses": sum(1 for value in values if value <= 0),
+        "net": sum(values),
+        "gross": sum(trade.gross_pnl for trade in trades),
+        "costs": sum(trade.total_costs for trade in trades),
+        "avg_net": sum(values) / len(values) if values else 0.0,
+        "pf": pf,
+        "win_rate": sum(1 for value in values if value > 0) / len(values) * 100 if values else 0.0,
+        "max_drawdown": drawdown,
+        "max_drawdown_pct": drawdown / max(diagnostic_notional, 1e-9) * 100,
+        "trades_per_day": daily["trades_per_day"],
+        "avg_daily_return_pct": daily["avg_daily_return_pct"],
+        "median_daily_return_pct": daily["median_daily_return_pct"],
+        "days_profitable_pct": daily["days_profitable_pct"],
+        "days_above_1pct": daily["days_above_1pct"],
+        "days_above_1pct_pct": daily["days_above_1pct_pct"],
+        "days_above_2pct": daily["days_above_2pct"],
+        "days_above_2pct_pct": daily["days_above_2pct_pct"],
+        "days_above_5pct": daily["days_above_5pct"],
+        "days_above_5pct_pct": daily["days_above_5pct_pct"],
+        "fee_drag_pct": daily["fee_drag_pct"],
+        "data_start": timestamp_to_utc(start) if start else "n/a",
+        "data_end": timestamp_to_utc(end) if end else "n/a",
+    }
+
+
+def oos_verdict(stats: dict[str, Any], fold_failures: int) -> str:
+    if int(stats.get("trades") or 0) < 30:
+        return "too_few_trades"
+    if fold_failures > 0:
+        return "not_profitable_out_of_sample"
+    if float(stats.get("max_drawdown_pct") or 0.0) > 10.0:
+        return "drawdown_too_high"
+    pf = stats.get("pf")
+    if float(stats.get("net") or 0.0) <= 0 or pf is None or float(pf) <= 1.0:
+        return "not_profitable_out_of_sample"
+    if float(pf) < 1.1:
+        return "weak_edge"
+    if int(stats.get("trades") or 0) >= 100 and float(pf) >= 1.2:
+        return "robust_candidate"
+    return "potentially_promising_needs_more_testing"
+
+
+def oos_edge_confidence(stats: dict[str, Any], fold_failures: int) -> str:
+    pf = float(stats.get("pf") or 0.0)
+    trades = int(stats.get("trades") or 0)
+    max_dd = float(stats.get("max_drawdown_pct") or 0.0)
+    if fold_failures == 0 and trades >= 100 and pf >= 1.2 and max_dd <= 10.0 and stats.get("net", 0.0) > 0:
+        return "HIGH"
+    if fold_failures <= 1 and trades >= 50 and pf >= 1.1 and max_dd <= 10.0 and stats.get("net", 0.0) > 0:
+        return "MEDIUM"
+    return "LOW"
+
+
+def empty_oos_summary() -> dict[str, Any]:
+    return {
+        "strategy": "n/a", "strategy_name": "n/a", "side": "n/a", "timeframe": "n/a",
+        "trades": 0, "wins": 0, "losses": 0, "net": 0.0, "gross": 0.0, "costs": 0.0,
+        "avg_net": 0.0, "pf": None, "win_rate": 0.0, "max_drawdown": 0.0,
+        "max_drawdown_pct": 0.0, "trades_per_day": 0.0, "avg_daily_return_pct": 0.0,
+        "days_profitable_pct": 0.0, "days_above_5pct_pct": 0.0, "fee_drag_pct": 0.0,
+        "verdict": "too_few_trades", "overfit_warning": True, "edge_confidence": "LOW",
+        "equity_curve": [], "equity_curve_basis": "no OOS trades available",
+    }
 
 
 def monte_carlo_summary(values: list[float], diagnostic_notional: float, iterations: int) -> dict[str, Any]:
@@ -1627,6 +1998,33 @@ def evaluate_targets(row: SearchRow | None) -> dict[str, dict[str, Any]]:
     }
 
 
+def evaluate_oos_targets(stats: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    profitable = bool(
+        float(stats.get("net") or 0.0) > 0
+        and float(stats.get("pf") or 0.0) > 1.1
+        and not stats.get("overfit_warning", True)
+    )
+    reasons = ["insufficient_edge"] if not profitable else []
+    return {
+        "target_a": target_result("achieved" if profitable and float(stats.get("trades_per_day") or 0.0) >= TARGET_TRADES_PER_DAY else "not_achieved", reasons or ["frequency_target_not_met"]),
+        "target_b": target_result("achieved" if profitable and float(stats.get("avg_daily_return_pct") or 0.0) >= TARGET_AVG_DAILY_RETURN_PCT else "not_achieved", reasons or ["daily_return_target_not_met"]),
+        "target_c": target_result("achieved" if profitable and float(stats.get("days_above_5pct_pct") or 0.0) >= TARGET_DAYS_ABOVE_5PCT_PCT else "not_achieved", reasons or ["consistency_target_not_met"]),
+    }
+
+
+def evaluate_oos_frequency_target(stats: dict[str, Any], target_min: float, target_max: float) -> dict[str, Any]:
+    trades_per_day = float(stats.get("trades_per_day") or 0.0)
+    profitable = bool(float(stats.get("net") or 0.0) > 0 and float(stats.get("pf") or 0.0) > 1.1 and not stats.get("overfit_warning", True))
+    reasons: list[str] = []
+    if trades_per_day < target_min:
+        reasons.append("too_few_quality_setups")
+    elif trades_per_day > target_max:
+        reasons.append("too_many_trades_for_quality_profile")
+    if not profitable:
+        reasons.append("insufficient_edge")
+    return target_result("achieved" if profitable and target_min <= trades_per_day <= target_max else "not_achieved", reasons or ["frequency_target_met"])
+
+
 def evaluate_frequency_target(row: SearchRow | None, target_min: float, target_max: float) -> dict[str, Any]:
     if row is None:
         return target_result("not_achieved", ["too_few_trades"])
@@ -1700,10 +2098,10 @@ def leaderboard_key(row: SearchRow) -> tuple[float, float, float, float, float]:
     )
 
 
-def row_to_dict(row: SearchRow | None) -> dict[str, Any] | None:
+def row_to_dict(row: SearchRow | None, include_equity_curve: bool = False) -> dict[str, Any] | None:
     if row is None:
         return None
-    return {
+    payload = {
         "symbol": row.symbol,
         "timeframe": row.timeframe,
         "agent_name": row.agent_name,
@@ -1771,6 +2169,10 @@ def row_to_dict(row: SearchRow | None) -> dict[str, Any] | None:
         "edge_confidence": row.edge_confidence,
         "daily_metrics": daily_summary_dict(row),
     }
+    if include_equity_curve:
+        payload["equity_curve"] = row.equity_curve
+        payload["equity_curve_basis"] = "realized net PnL after fees, spread, slippage and latency-adjusted fills"
+    return payload
 
 
 def daily_summary_dict(row: SearchRow | None) -> dict[str, Any]:
@@ -2025,6 +2427,38 @@ def max_drawdown(values: list[float]) -> float:
         peak = max(peak, equity)
         drawdown = max(drawdown, peak - equity)
     return drawdown
+
+
+def equity_curve_points(trades: list[SearchTrade], diagnostic_notional: float) -> list[dict[str, Any]]:
+    """Daily realized equity points using net PnL after every modeled cost."""
+    if not trades:
+        return []
+    by_day: dict[str, list[SearchTrade]] = defaultdict(list)
+    for trade in sorted(trades, key=lambda item: item.exit_timestamp):
+        by_day[day_key(trade.exit_timestamp)].append(trade)
+    cumulative_net = 0.0
+    peak_equity = diagnostic_notional
+    points: list[dict[str, Any]] = []
+    for day, bucket in sorted(by_day.items()):
+        daily_gross = sum(trade.gross_pnl for trade in bucket)
+        daily_costs = sum(trade.total_costs for trade in bucket)
+        daily_net = sum(trade.net_pnl for trade in bucket)
+        cumulative_net += daily_net
+        equity = diagnostic_notional + cumulative_net
+        peak_equity = max(peak_equity, equity)
+        drawdown = max(peak_equity - equity, 0.0)
+        points.append({
+            "date": day,
+            "daily_gross": round(daily_gross, 8),
+            "daily_costs": round(daily_costs, 8),
+            "daily_net": round(daily_net, 8),
+            "cumulative_net": round(cumulative_net, 8),
+            "equity": round(equity, 8),
+            "drawdown": round(drawdown, 8),
+            "drawdown_pct": round(drawdown / max(diagnostic_notional, 1e-9) * 100, 8),
+            "trades": len(bucket),
+        })
+    return points
 
 
 def median(values: list[float]) -> float:

@@ -20,14 +20,14 @@ if not exist "data\historical_3y_15m\BTCUSDT_15m.csv" (
 if not exist "data" mkdir "data"
 if not exist "data\backtest_logs" mkdir "data\backtest_logs"
 
-for /f %%i in ('powershell -NoProfile -Command "Get-Date -Format yyyyMMdd_HHmmss"') do set "RUN_TS=%%i"
+for /f %%i in ('powershell -NoProfile -Command "[TimeZoneInfo]::ConvertTimeBySystemTimeZoneId((Get-Date), 'GMT Standard Time').ToString('yyyyMMdd_HHmmss')"') do set "RUN_TS=%%i"
 set "RUN_LABEL=btc_15m_high_quality_futures_search_%RUN_TS%"
 set "OUTPUT_FILE=data\btc_15m_high_quality_futures_search_%RUN_TS%.txt"
 
 echo BTCUSDT 15m high-quality lower-frequency futures strategy search.
 echo Backtesting only. Live trading disabled. No real orders. Simulated leverage only.
 echo Uses Binance futures-style fee defaults: maker 0.02%%, taker 0.05%%.
-echo Targets are diagnostics: 5-20 trades/day, 0.3%%-2%% target moves, max 60 minute holds, realistic execution drag.
+echo Targets are diagnostics: 5-10 trades/day, with 1-3/day acceptable only when validated edge is stronger.
 
 ".\.venv\Scripts\python.exe" -m backtesting.scalping_search ^
   --symbol BTC/USDT ^

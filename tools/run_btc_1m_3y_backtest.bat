@@ -29,7 +29,7 @@ if /i not "%~2"=="--confirm-large-1m" if /i not "%~1"=="--confirm-large-1m" (
 if not exist "data" mkdir "data"
 if not exist "data\backtest_logs" mkdir "data\backtest_logs"
 
-for /f %%i in ('powershell -NoProfile -Command "Get-Date -Format yyyyMMdd_HHmmss"') do set "RUN_TS=%%i"
+for /f %%i in ('powershell -NoProfile -Command "[TimeZoneInfo]::ConvertTimeBySystemTimeZoneId((Get-Date), 'GMT Standard Time').ToString('yyyyMMdd_HHmmss')"') do set "RUN_TS=%%i"
 set "RUN_LABEL=btc_1m_3y_single_baseline_%RUN_TS%"
 set "OUTPUT_FILE=data\btc_1m_3y_single_baseline_%RUN_TS%.txt"
 
